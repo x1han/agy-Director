@@ -15,3 +15,7 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# 本地构建产物
+/agy-untun.exe
+/dist/
