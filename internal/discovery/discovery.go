@@ -3,18 +3,15 @@
 package discovery
 
 import (
-	"bufio"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // TargetKind 区分两种启动目标。
@@ -73,7 +70,7 @@ func IDECandidates() []string {
 			"/Applications/Antigravity.app/Contents/MacOS/Antigravity",
 			"/Applications/Antigravity.app/Contents/MacOS/antigravity",
 		)
-		if home, err := os.UserHomeDir(); err == nil {
+		if home := homeDir(); home != "" {
 			out = append(out,
 				filepath.Join(home, "Applications", "Antigravity.app", "Contents", "MacOS", "Antigravity"),
 			)
@@ -86,12 +83,19 @@ func IDECandidates() []string {
 			"/usr/bin/antigravity",
 			"/usr/local/bin/antigravity",
 		)
-		if home, err := os.UserHomeDir(); err == nil {
+		if home := homeDir(); home != "" {
 			out = append(out,
 				filepath.Join(home, "Applications", "Antigravity.AppImage"),
 				filepath.Join(home, ".local", "bin", "antigravity"),
 				filepath.Join(home, "opt", "Antigravity", "antigravity"),
 			)
+		}
+	}
+
+	// PATH 兜底
+	for _, name := range []string{"antigravity", "Antigravity"} {
+		if p, err := exec.LookPath(name); err == nil {
+			out = append(out, p)
 		}
 	}
 
@@ -112,7 +116,7 @@ func CLICandidates() []string {
 			out = append(out, filepath.Join(base, "agy", "bin", "agy.exe"))
 		}
 	} else {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home := homeDir(); home != "" {
 			out = append(out, filepath.Join(home, ".local", "bin", "agy"))
 			out = append(out, filepath.Join(home, "bin", "agy"))
 		}
@@ -120,11 +124,10 @@ func CLICandidates() []string {
 	}
 
 	// PATH 兜底
-	if p, err := exec.LookPath("agy"); err == nil {
-		out = append(out, p)
-	}
-	if p, err := exec.LookPath("agy.exe"); err == nil {
-		out = append(out, p)
+	for _, name := range []string{"agy", "agy.exe"} {
+		if p, err := exec.LookPath(name); err == nil {
+			out = append(out, p)
+		}
 	}
 
 	return out
@@ -141,10 +144,7 @@ func FindTarget(kind TargetKind) (Target, bool) {
 	}
 
 	for _, c := range candidates {
-		if c == "" {
-			continue
-		}
-		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+		if executableExists(c) {
 			t := Target{Kind: kind, Path: c, Source: "路径探测"}
 			t.Version = probeVersion(kind, c)
 			return t, true
@@ -278,7 +278,6 @@ func (e asarEntry) offsetValue() (uint64, bool) {
 	if len(e.Offset) == 0 {
 		return 0, false
 	}
-	// 字符串形式
 	if e.Offset[0] == '"' {
 		var s string
 		if err := json.Unmarshal(e.Offset, &s); err != nil {
@@ -287,7 +286,6 @@ func (e asarEntry) offsetValue() (uint64, bool) {
 		n, err := strconv.ParseUint(s, 10, 64)
 		return n, err == nil
 	}
-	// 数字形式
 	var n uint64
 	if err := json.Unmarshal(e.Offset, &n); err != nil {
 		return 0, false
@@ -295,165 +293,63 @@ func (e asarEntry) offsetValue() (uint64, bool) {
 	return n, true
 }
 
-// IDEVersionFile 暴露给上层，用于在 IDE 未安装时提示版本。
-// 返回空串表示读不到。
-func IDEVersionFile(path string) string { return probeVersion(TargetIDE, path) }
-
 // ─────────────────────────────────────────────────────────────────
 // 端口枚举
 // ─────────────────────────────────────────────────────────────────
 
 // ListenPort 是一个本机监听端口。
 type ListenPort struct {
+	// Host 是**连接目标**地址。已归一化：
+	// 监听通配地址 "0.0.0.0" / "::" 会被换成 127.0.0.1 / ::1。
 	Host string
 	Port int
+	// Wildcard 为 true 表示原始监听地址是通配地址（局域网可见）。
+	Wildcard bool
+	// PID 是占用这个端口的进程（0 表示未知）。
+	//
+	// 有这个字段就能在 CLI 里直接说「10808 是 v2rayN 开的」，
+	// 而不是只丢一个端口号让用户猜。
+	PID int
 }
 
-// IsLoopback 判断该端口是否只监听回环地址。
-func (p ListenPort) IsLoopback() bool {
-	return p.Host == "127.0.0.1" || p.Host == "::1" || p.Host == "localhost"
+// CommonProxyPorts 是常见代理客户端端口白名单。
+//
+// 只在系统监听表读不到时才用它兜底。
+// 绝不做全端口扫描——10 秒内 65535 次 SYN 会被杀毒软件
+// （Defender / 火绒 / CrowdStrike / Little Snitch）直接判定为
+// 端口扫描器并隔离进程，在 macOS/Linux 上还会打满 ulimit -n。
+var CommonProxyPorts = []int{
+	1080, 1081, 10808, 10809, 10810,
+	7890, 7891, 7892, 7897,
+	8080, 8081, 8118, 8888, 8889,
+	10800, 20170, 20171, 20172,
 }
 
 // ListenPorts 枚举本机所有 TCP 监听端口。
 //
-// 策略：优先用系统工具读监听表（快，实测 netstat 约 3s / 47 个端口）；
-// 读不到时退化为并发扫描 1..65535（实测约 10.5s）。
+// 各平台用系统原生途径，避免脆弱的外部命令字符串解析：
+//   - Windows: iphlpapi 的 GetExtendedTcpTable
+//   - Linux:   /proc/net/tcp 与 /proc/net/tcp6
+//   - macOS:   lsof -iTCP -sTCP:LISTEN
+//
+// 具体实现放在 ports_<os>.go，各自带 build tag；
+// listenPorts() 在不支持的平台是一个桩，返回错误。
+//
+// 任何一条路失败时返回错误，**不做全端口扫描兜底**。
 func ListenPorts() ([]ListenPort, error) {
-	if ports, err := listenPortsFromSystem(); err == nil && len(ports) > 0 {
-		return ports, nil
-	}
-	return scanAllPorts(256)
+	return listenPorts()
 }
 
-// listenPortsFromSystem 用 netstat / ss 读取监听表。
-func listenPortsFromSystem() ([]ListenPort, error) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("netstat", "-ano", "-p", "tcp")
-	case "linux":
-		cmd = exec.Command("ss", "-lntpH")
-	case "darwin":
-		cmd = exec.Command("netstat", "-an", "-p", "tcp")
-	default:
-		return nil, fmt.Errorf("unsupported os: %s", runtime.GOOS)
+// normalizeListenHost 把监听地址转成连接目标地址。
+//
+// "0.0.0.0" / "" / "*" -> 127.0.0.1（并标记 wildcard）
+// "::"                 -> ::1（并标记 wildcard）
+func normalizeListenHost(host string) (string, bool) {
+	switch strings.TrimSpace(host) {
+	case "", "*", "0.0.0.0":
+		return "127.0.0.1", true
+	case "::", "[::]":
+		return "::1", true
 	}
-
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-
-	seen := map[string]bool{}
-	var ports []ListenPort
-
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if runtime.GOOS != "linux" && !strings.Contains(line, "LISTEN") {
-			continue
-		}
-		host, port, ok := parseListenLine(line)
-		if !ok {
-			continue
-		}
-		key := fmt.Sprintf("%s:%d", host, port)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		ports = append(ports, ListenPort{Host: host, Port: port})
-	}
-	return ports, nil
-}
-
-// parseListenLine 从一行系统输出里解析出 host 与 port。
-func parseListenLine(line string) (string, int, bool) {
-	fields := strings.Fields(line)
-	for _, f := range fields {
-		if !strings.Contains(f, ":") {
-			continue
-		}
-		// 跳过 PID 之类的纯数字
-		idx := strings.LastIndex(f, ":")
-		if idx < 0 {
-			continue
-		}
-		hostPart := f[:idx]
-		portPart := f[idx+1:]
-		if portPart == "" {
-			continue
-		}
-		port, err := atoi(portPart)
-		if err != nil {
-			continue
-		}
-		host := hostPart
-		// IPv6: [::] 或 [::1]
-		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-			host = host[1 : len(host)-1]
-		}
-		// Windows 的 0.0.0.0 / :: 视为全接口监听
-		switch host {
-		case "0.0.0.0", "::", "*":
-			host = "0.0.0.0"
-		}
-		return host, port, true
-	}
-	return "", 0, false
-}
-
-func atoi(s string) (int, error) {
-	n := 0
-	if s == "" {
-		return 0, fmt.Errorf("empty")
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0, fmt.Errorf("not a number: %q", s)
-		}
-		n = n*10 + int(r-'0')
-		if n > 65535 {
-			return 0, fmt.Errorf("out of range")
-		}
-	}
-	return n, nil
-}
-
-// scanAllPorts 并发扫描 1..65535，收集处于 LISTEN 的端口。
-func scanAllPorts(concurrency int) ([]ListenPort, error) {
-	if concurrency <= 0 {
-		concurrency = 256
-	}
-
-	var mu sync.Mutex
-	var ports []ListenPort
-	next := 1
-
-	var wg sync.WaitGroup
-	for w := 0; w < concurrency; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				mu.Lock()
-				p := next
-				next++
-				mu.Unlock()
-				if p > 65535 {
-					return
-				}
-				ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
-				if err == nil {
-					mu.Lock()
-					ports = append(ports, ListenPort{Host: "127.0.0.1", Port: p})
-					mu.Unlock()
-					ln.Close()
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	return ports, nil
+	return host, false
 }

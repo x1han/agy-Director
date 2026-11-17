@@ -53,7 +53,14 @@ img{{display:block;width:{size}px;height:{size}px}}
 
 
 def render_svg_to_png(chrome, svg_path, out_png, size=512):
-    """用无头 Chrome 把 SVG 渲染成透明背景 PNG。"""
+    """用无头 Chrome 把 SVG 渲染成透明背景 PNG。
+
+    注意：必须显式给 --screenshot=... 的**文件类型**。
+    只把 .png 当成扩展名时，某些 Chrome 版本写出来的是
+    **BMP**（实测：文件头 00 00 01 00 = BITMAPINFOHEADER），
+    后面的 PNG 解析器直接崩。所以这里用 --screenshot=<path>.png
+    并在写完后校验文件头。
+    """
     workdir = tempfile.mkdtemp(prefix="ico-build-")
     try:
         svg_name = os.path.basename(svg_path)
@@ -63,17 +70,29 @@ def render_svg_to_png(chrome, svg_path, out_png, size=512):
             f.write(HTML_TEMPLATE.format(size=size, svg=svg_name))
 
         url = "file:///" + html.replace("\\", "/").lstrip("/")
+        # 用一个独立的 user-data-dir，避免与用户正在运行的 Chrome 抢实例
+        # （会直接把请求转发到已有实例，导致截不到图）。
+        profile = os.path.join(workdir, "profile")
         cmd = [
-            chrome, "--headless", "--disable-gpu",
+            chrome, "--headless=new", "--disable-gpu",
+            f"--user-data-dir={profile}",
             f"--screenshot={out_png}",
             f"--window-size={size},{size}",
             "--default-background-color=00000000",
             "--hide-scrollbars",
+            "--no-first-run",
+            "--no-default-browser-check",
             url,
         ]
         r = subprocess.run(cmd, capture_output=True, timeout=120)
         if not os.path.exists(out_png):
             sys.exit(f"渲染失败:\n{r.stdout.decode(errors='replace')}\n{r.stderr.decode(errors='replace')}")
+
+        with open(out_png, "rb") as f:
+            sig = f.read(8)
+        if sig != b"\x89PNG\r\n\x1a\n":
+            sys.exit(f"渲染出来的不是 PNG（文件头 {sig.hex()}）——"
+                     f"多半是 Chrome 写成了 BMP")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

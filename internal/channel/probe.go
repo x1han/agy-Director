@@ -3,6 +3,7 @@ package channel
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,7 +18,7 @@ type ProbeResult struct {
 	HTTPProxy bool
 	// SOCKS5 为 true 表示该端口接受 SOCKS5 握手。
 	SOCKS5 bool
-	// LAN 为 true 表示端口监听在非回环地址。
+	// LAN 为 true 表示端口原始监听在非回环地址（0.0.0.0 / ::）。
 	LAN bool
 	// Err 记录失败原因（全部失败时有值）。
 	Err error
@@ -26,7 +27,12 @@ type ProbeResult struct {
 // Mixed 为 true 表示该端口同时支持 HTTP 与 SOCKS5（mixed inbound）。
 func (r ProbeResult) Mixed() bool { return r.HTTPProxy && r.SOCKS5 }
 
-// Schemes 返回该端口支持的协议列表，HTTP 优先（net/http 对其支持最完整）。
+// Schemes 返回该端口支持的协议列表，HTTP 优先。
+//
+// 优先 HTTP 的理由：net/http.Transport 对 HTTP 代理的支持路径最完整
+// （CONNECT 隧道 + 绝对 URI 两种形式都支持），而 socks5:// 走的是
+// x/net/proxy 的 SOCKS5 dialer，某些边缘场景（如需要 HTTP/1.0 代理、
+// 或代理侧要求 Basic 认证）行为不如 HTTP 代理一致。
 func (r ProbeResult) Schemes() []Scheme {
 	var out []Scheme
 	if r.HTTPProxy {
@@ -49,7 +55,13 @@ func (r ProbeResult) Best() Scheme {
 
 // ProbeTarget 对一个 host:port 做协议探测。
 // 不做任何外部请求——只验证端点是否讲 HTTP CONNECT / SOCKS5。
+//
+// host 必须是**连接目标**地址，不能是监听通配地址。
+// 监听表里的 "0.0.0.0" / "::" 必须先经 NormalizeTarget 归一化成
+// 127.0.0.1 / ::1，否则会写出 HTTP_PROXY=http://0.0.0.0:10810 这种
+// 在部分平台属非法目标地址的值。
 func ProbeTarget(host string, port int, timeout time.Duration) ProbeResult {
+	host = NormalizeTarget(host)
 	res := ProbeResult{Channel: Channel{Host: host, Port: port}}
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -71,6 +83,25 @@ func ProbeTarget(host string, port int, timeout time.Duration) ProbeResult {
 	return res
 }
 
+// NormalizeTarget 把监听通配地址归一化成可连接的本地地址。
+//
+// "0.0.0.0" / "" / "*" -> "127.0.0.1"
+// "::"                 -> "::1"
+// 其余原样返回。
+//
+// 背景：服务端用 INADDR_ANY 监听时，监听表里记的是 "0.0.0.0:port"。
+// 把这个值直接当作代理目标写进 HTTP_PROXY 是错的——
+// 0.0.0.0 是「本机所有接口」的监听语义，不是合法的连接目标。
+func NormalizeTarget(host string) string {
+	switch strings.TrimSpace(host) {
+	case "", "*", "0.0.0.0":
+		return "127.0.0.1"
+	case "::", "[::]":
+		return "::1"
+	}
+	return host
+}
+
 func dialTimeout(host string, port int, timeout time.Duration) error {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, fmt.Sprint(port)), timeout)
 	if err != nil {
@@ -79,9 +110,12 @@ func dialTimeout(host string, port int, timeout time.Duration) error {
 	return conn.Close()
 }
 
-// probeHTTPConnect 发一个 CONNECT 请求，看端点是否回 200。
-// 注意：只看首个状态行，且必须以 "HTTP/" 开头——
-// 否则说明对端不是 HTTP 代理（例如某些服务会回二进制或自定义协议）。
+// probeHTTPConnect 发一个 CONNECT 请求，用标准库解析响应。
+//
+// 不能手写字符串匹配：TCP 是字节流，没有消息边界；
+// 而且 "HTTP/1.1 200 Connection established" 这类首行的
+// reason phrase 里也可能出现 " 200"，用 strings.Contains 会误判。
+// 用 http.ReadResponse 解析出 StatusCode 才可靠。
 func probeHTTPConnect(host string, port int, timeout time.Duration) bool {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, fmt.Sprint(port)), timeout)
 	if err != nil {
@@ -89,28 +123,32 @@ func probeHTTPConnect(host string, port int, timeout time.Duration) bool {
 	}
 	defer conn.Close()
 
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	_, _ = conn.Write([]byte("CONNECT generativelanguage.googleapis.com:443 HTTP/1.1\r\n" +
-		"Host: generativelanguage.googleapis.com:443\r\n\r\n"))
+	deadline := time.Now().Add(timeout)
+	_ = conn.SetDeadline(deadline)
 
-	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString('\n')
+	req := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Opaque: "generativelanguage.googleapis.com:443"},
+		Host:   "generativelanguage.googleapis.com:443",
+		Header: http.Header{},
+	}
+	if err := req.Write(conn); err != nil {
+		return false
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
 	if err != nil {
 		return false
 	}
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "HTTP/") {
-		return false
-	}
-	// "HTTP/1.1 200 Connection established"
-	return strings.Contains(line, " 200")
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // probeSOCKS5 做 SOCKS5 协商握手。
 //
 // 只做 greeting（05 01 00 -> 05 00），不做 CONNECT：
 // greeting 足以确认"对端讲 SOCKS5"，而 CONNECT 需要真正连出去，
-// 在扫描阶段会拖慢并可能超时（实测 1.2s 预算下会漏判 socks5）。
+// 在扫描阶段会拖慢并可能超时（实测 1.2 s 预算下会漏判 socks5）。
 // 真正的功能验证交给 CheckReachability —— Go 的 http.Transport
 // 原生支持 socks5:// scheme，能直接验证通道可用性。
 func probeSOCKS5(host string, port int, timeout time.Duration) bool {
@@ -126,8 +164,11 @@ func probeSOCKS5(host string, port int, timeout time.Duration) bool {
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
 		return false
 	}
+	// 必须用 io.ReadFull：TCP 无消息边界，一次 Read 可能只返回 1 字节。
+	// 用 conn.Read 会拿到 n=1, err=nil，而 resp[1] 是零值——
+	// 那种情况恰好蒙混过关，换个校验就会静默判错。
 	resp := make([]byte, 2)
-	if _, err := conn.Read(resp); err != nil {
+	if _, err := io.ReadFull(conn, resp); err != nil {
 		return false
 	}
 	// VER=5 且方法=0（NO AUTH）
@@ -168,9 +209,9 @@ func CheckReachability(ch Channel, targetURL string, timeout time.Duration) Reac
 	}
 
 	transport := &http.Transport{
-		Proxy:             http.ProxyURL(proxyURL),
+		Proxy:               http.ProxyURL(proxyURL),
 		TLSHandshakeTimeout: timeout,
-		DisableKeepAlives: true,
+		DisableKeepAlives:   true,
 	}
 	// Go 的 Transport 原生支持 socks5:// —— 无需额外代码。
 	client := &http.Client{Transport: transport, Timeout: timeout}

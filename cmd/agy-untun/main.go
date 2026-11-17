@@ -34,6 +34,9 @@ channels 子命令:
   add <名> <URL>   添加通道，如 add v2rayN http://127.0.0.1:10808
   remove <名>      移除通道
   test <名|URL>    测试通道能否连通 Antigravity 的后端端点
+
+doctor 选项:
+  --processes      只列出「会被终止的进程」，不做任何终止动作
 `
 
 func main() {

@@ -38,21 +38,39 @@ type Options struct {
 
 // BuildEnv 构造启动 Antigravity 用的环境变量。
 //
-// 注意 NO_PROXY 的处理：保留用户已有的值并追加回环地址，
-// 避免覆盖用户自己的 bypass 列表（曾用注册表 HKCU\Environment 的值）。
+// 规则：
+//   - HTTP_PROXY / http_proxy / HTTPS_PROXY / https_proxy 一律设为通道 URL。
+//     Go 的 httpproxy 同时认大小写两种形式（httpproxy.FromEnvironment），
+//     某些子工具只认小写，所以两种都设。
+//   - **ALL_PROXY / all_proxy 只在通道是纯 socks5 时才设。**
+//     原因：ALL_PROXY 没有 scheme 之分，多数工具（curl、git、pip）把它
+//     当成 socks5 代理。若通道是 http:// 却写成 ALL_PROXY=http://...，
+//     一部分只读 ALL_PROXY 的工具会按 socks5 去握手，直接握手失败。
+//     反过来 socks5 通道设 ALL_PROXY 是最正确的表达。
+//   - NO_PROXY 保留用户已有的值并追加回环地址，
+//     不覆盖用户自己的 bypass 列表（曾用注册表 HKCU\Environment 的值）。
 func BuildEnv(ch channel.Channel, extra map[string]string) []string {
 	env := os.Environ()
 
 	proxyURL := ch.URL()
-	// 同时设置大小写两种形式：Go 的 httpproxy 同时认
-	// HTTP_PROXY/HTTPS_PROXY 和 http_proxy/https_proxy，
-	// 但某些子工具只认小写。
 	env = setEnv(env, "HTTP_PROXY", proxyURL)
 	env = setEnv(env, "http_proxy", proxyURL)
 	env = setEnv(env, "HTTPS_PROXY", proxyURL)
 	env = setEnv(env, "https_proxy", proxyURL)
-	env = setEnv(env, "ALL_PROXY", proxyURL)
-	env = setEnv(env, "all_proxy", proxyURL)
+
+	// ALL_PROXY 只在纯 socks5 通道下注入。
+	if ch.Scheme == channel.SchemeSOCKS5 {
+		env = setEnv(env, "ALL_PROXY", proxyURL)
+		env = setEnv(env, "all_proxy", proxyURL)
+	} else {
+		// http 通道下**不设** ALL_PROXY。
+		// 用户环境里若已有一个指向别的代理的 ALL_PROXY，这里从**子进程**
+		// 环境里去掉它——否则只读 ALL_PROXY 的子工具会走错代理。
+		// 注意这只影响我们 spawn 出来的子进程，不改用户自己的环境，
+		// doctor 也会把"检测到你有 ALL_PROXY，已在子进程中忽略"报出来。
+		env = unsetEnv(env, "ALL_PROXY")
+		env = unsetEnv(env, "all_proxy")
+	}
 
 	env = setEnv(env, "NO_PROXY", channel.JoinNoProxy(os.Getenv("NO_PROXY")))
 	env = setEnv(env, "no_proxy", channel.JoinNoProxy(os.Getenv("no_proxy")))
@@ -61,6 +79,18 @@ func BuildEnv(ch channel.Channel, extra map[string]string) []string {
 		env = setEnv(env, k, v)
 	}
 	return env
+}
+
+// unsetEnv 删除指定的环境变量（大小写两种都删）。
+func unsetEnv(env []string, key string) []string {
+	out := env[:0:0]
+	for _, e := range env {
+		if strings.HasPrefix(e, key+"=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // setEnv 替换已有键或追加新键。

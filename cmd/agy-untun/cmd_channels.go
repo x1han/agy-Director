@@ -306,33 +306,83 @@ func schemeList(c channel.Channel) string {
 
 // discoverChannels 扫描本机，识别出所有像代理的端点。
 //
+// 三级来源（按置信度从高到低）：
+//
+//  1. **系统代理设置** —— Windows 注册表 / macOS scutil / Linux gsettings。
+//     这是最准的来源：绝大多数用 v2rayN / Clash 的用户都开着系统代理，
+//     端口就写在系统设置里，不需要猜。只读，绝不写。
+//  2. **本机监听表** —— 用系统原生接口读（Windows GetExtendedTcpTable、
+//     Linux /proc/net/tcp、macOS lsof），不做任何端口扫描。
+//  3. **常见代理端口白名单** —— 前两条都读不到时的兜底，
+//     最多 19 个端口，逐个做协议探测。
+//
 // 排序规则：回环地址优先于局域网地址。
 // 局域网监听的端口（如 v2rayN 的 10810，listen=0.0.0.0）意味着
 // 探测流量会经过非回环接口，既慢又可能被同网段观察到，
 // 因此只作为候选列出，不优先使用。
 func discoverChannels() ([]channel.Channel, error) {
-	ports, err := discovery.ListenPorts()
-	if err != nil {
-		return nil, err
+	var out []channel.Channel
+	seen := map[string]bool{}
+
+	add := func(c channel.Channel, src string) {
+		key := fmt.Sprintf("%s:%d", c.Host, c.Port)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		c.Name = src
+		out = append(out, c)
 	}
 
-	var out []channel.Channel
-	for _, p := range ports {
-		// 跳过明显的系统端口，降低无谓探测。
-		if isSystemPort(p.Port) {
-			continue
+	// ── 来源 1：系统代理 ────────────────────────────────────────────
+	if sp, err := discovery.ReadSystemProxy(); err == nil && sp.Enabled && sp.Port > 0 {
+		ch := channel.Channel{
+			Host:   sp.Host,
+			Port:   sp.Port,
+			Scheme: channel.Scheme(sp.Scheme),
 		}
-		probe := channel.ProbeTarget(p.Host, p.Port, 1200*time.Millisecond)
-		if !probe.HTTPProxy && !probe.SOCKS5 {
-			continue
+		if ch.Scheme != channel.SchemeHTTP && ch.Scheme != channel.SchemeSOCKS5 {
+			ch.Scheme = channel.SchemeHTTP
 		}
-		out = append(out, channel.Channel{
-			Host:      p.Host,
-			Port:      p.Port,
-			Scheme:    probe.Best(),
-			Protocols: probe.Schemes(),
-			LAN:       probe.LAN,
-		})
+		add(ch, sp.Source)
+	}
+
+	// ── 来源 2：本机监听表 ──────────────────────────────────────────
+	if ports, err := discovery.ListenPorts(); err == nil {
+		for _, p := range ports {
+			// 跳过明显的系统端口，降低无谓探测。
+			if isSystemPort(p.Port) {
+				continue
+			}
+			probe := channel.ProbeTarget(p.Host, p.Port, 1200*time.Millisecond)
+			if !probe.HTTPProxy && !probe.SOCKS5 {
+				continue
+			}
+			add(channel.Channel{
+				Host:      p.Host,
+				Port:      p.Port,
+				Scheme:    probe.Best(),
+				Protocols: probe.Schemes(),
+				LAN:       probe.LAN,
+			}, "本机监听表")
+		}
+	}
+
+	// ── 来源 3：常见端口白名单（兜底）──────────────────────────────
+	// 只有前两个来源一个都没产出时才有意义。
+	if len(out) == 0 {
+		for _, port := range discovery.CommonProxyPorts {
+			probe := channel.ProbeTarget("127.0.0.1", port, 1200*time.Millisecond)
+			if !probe.HTTPProxy && !probe.SOCKS5 {
+				continue
+			}
+			add(channel.Channel{
+				Host:      "127.0.0.1",
+				Port:      port,
+				Scheme:    probe.Best(),
+				Protocols: probe.Schemes(),
+			}, "常见代理端口")
+		}
 	}
 
 	// 回环优先

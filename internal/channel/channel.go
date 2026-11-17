@@ -40,9 +40,6 @@ type Channel struct {
 	// LAN 为 true 表示该端点监听在非回环地址（0.0.0.0），
 	// 探测流量可能被同网段看到，默认应跳过。
 	LAN bool `json:"lan,omitempty"`
-	// Launch 是可选的"启动这个代理客户端"命令，
-	// 用于通道端口未就绪时自动拉起客户端。
-	Launch []string `json:"launch,omitempty"`
 	// Preferred 为 true 表示用户显式指定，探测时不做 auto 淘汰。
 	Preferred bool `json:"preferred,omitempty"`
 }
