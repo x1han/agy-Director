@@ -4,7 +4,6 @@ package discovery
 
 import (
 	"fmt"
-	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -76,26 +75,4 @@ func listenPorts() ([]ListenPort, error) {
 	return outPorts, nil
 }
 
-// splitListenAddr 拆 lsof 的地址字段。
-//
-//	"127.0.0.1:10808" -> ("127.0.0.1", "10808", true)
-//	"*:10808"        -> ("*",      "10808", true)
-//	"[::1]:10808"    -> ("::1",    "10808", true)
-func splitListenAddr(addr string) (string, string, bool) {
-	idx := strings.LastIndex(addr, ":")
-	if idx < 0 {
-		return "", "", false
-	}
-	host := addr[:idx]
-	port := addr[idx+1:]
-
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	// lsof 在 IPv4 上有时打印 "*"，有时打印实际地址
-	if host == "*" {
-		host = "0.0.0.0"
-	}
-	if net.ParseIP(host) == nil {
-		return "", "", false
-	}
-	return host, port, true
-}
+// splitListenAddr 见 listenaddr.go（无平台依赖，便于跨平台单测）。

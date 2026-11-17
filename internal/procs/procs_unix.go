@@ -48,7 +48,19 @@ func list() ([]Proc, error) {
 		}
 		name := strings.TrimSpace(rest[:second])
 		cmdline := strings.TrimSpace(rest[second:])
-		result = append(result, Proc{PID: pid, Name: name, CmdLine: cmdline})
+		result = append(result, Proc{
+			PID:     pid,
+			Name:    name,
+			CmdLine: cmdline,
+			ExePath: exePathOf(pid),
+		})
 	}
 	return result, nil
 }
+
+// exePathOf 的实现按平台分文件：
+//
+//   - Linux: procs_linux.go   —— /proc/<pid>/exe 软链接
+//   - macOS: procs_darwin.go  —— lsof -d txt
+//
+// 这里不定义，避免任一平台引用到另一个平台的符号。

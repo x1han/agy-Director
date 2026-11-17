@@ -2,7 +2,9 @@
 //
 // 核心机制（已实证）：Antigravity 的 Go 后端只从环境变量解析代理。
 // Electron 壳的 dist/languageServer.js 里
-//     const env = { ...process.env, ...loginShellEnv };
+//
+//	const env = { ...process.env, ...loginShellEnv };
+//
 // 把 Electron 进程的 env 透传给 language_server 子进程，
 // 因此在父进程注入 HTTPS_PROXY 即可让后端走代理。
 package launcher

@@ -187,15 +187,16 @@ func splitOverride(v string) []string {
 // readDarwinSystemProxy 用 scutil --proxy 读取。
 //
 // 输出形如：
-//   <dictionary> { 
-//     ExceptionsList : <array> { ... }
-//     HTTPEnable : 1
-//     HTTPPort : 7890
-//     HTTPProxy : 127.0.0.1
-//     HTTPSEnable : 1
-//     HTTPSPort : 7890
-//     HTTPSProxy : 127.0.0.1
-//   }
+//
+//	<dictionary> {
+//	  ExceptionsList : <array> { ... }
+//	  HTTPEnable : 1
+//	  HTTPPort : 7890
+//	  HTTPProxy : 127.0.0.1
+//	  HTTPSEnable : 1
+//	  HTTPSPort : 7890
+//	  HTTPSProxy : 127.0.0.1
+//	}
 func readDarwinSystemProxy() (SystemProxy, error) {
 	out, err := exec.Command("scutil", "--proxy").Output()
 	if err != nil {

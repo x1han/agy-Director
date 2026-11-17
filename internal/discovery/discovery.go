@@ -204,17 +204,19 @@ func probeVersion(kind TargetKind, path string) string {
 // readAsarPackageVersion 从 app.asar 里读顶层 package.json 的 version。
 //
 // asar 布局：前 16 字节是头部，
-//   [0:4]   uint32 = 4
-//   [4:8]   uint32 = 头部 pickle 大小
-//   [8:12]  uint32 = 4
-//   [12:16] uint32 = 头部 JSON 长度
-//   [16:16+len]  头部 JSON
+//
+//	[0:4]   uint32 = 4
+//	[4:8]   uint32 = 头部 pickle 大小
+//	[8:12]  uint32 = 4
+//	[12:16] uint32 = 头部 JSON 长度
+//	[16:16+len]  头部 JSON
+//
 // 数据区起点 = 16 + 向上对齐到 4 的头部 JSON 长度。
 //
 // 两个坑（实测踩过）：
-//  1) 头部 JSON 里有嵌套的 package.json（node_modules 里有很多），
+//  1. 头部 JSON 里有嵌套的 package.json（node_modules 里有很多），
 //     必须解析出顶层 "files" 下的那一个，不能字符串搜索。
-//  2) 文件项的 offset 可能是**字符串**（如 "5371832"），
+//  2. 文件项的 offset 可能是**字符串**（如 "5371832"），
 //     也可能是数字，两种都要接受。
 func readAsarPackageVersion(installDir string) string {
 	asarPath := filepath.Join(installDir, "resources", "app.asar")

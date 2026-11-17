@@ -4,6 +4,25 @@
 // 把 argv 转发给已有实例并立刻退出（**丢掉新的环境变量**）。
 // 所以启动前必须确认没有旧实例在跑；而如果终止失败，
 // 必须把**精确的 PID** 告诉用户，让他能自己手动结束。
+//
+// ## 判据的优先级（这是踩过坑之后定的）
+//
+//  1. **可执行文件绝对路径**（首选，最可靠）
+//     操作系统天然提供：Windows 用 QueryFullProcessImageNameW，
+//     Linux 用 /proc/<pid>/exe，macOS 用 proc_pidpath。
+//     桌面版 Antigravity 装在已知目录（如
+//     %LOCALAPPDATA%\Programs\antigravity\），只要进程的 exe 路径
+//     落在那个前缀下，就是它。
+//
+//  2. **进程树**（次选）
+//     桌面版的子进程（渲染进程 / GPU 进程 / utility 进程）都由
+//     桌面版主进程派生，从主进程沿 PPID 往上走能认出来。
+//
+//  3. 命令行特征（最后手段，只用来**排除**）
+//
+// 绝不用命令行特征来**认定**"这是 Antigravity"——
+// Chromium 的渲染进程命令行同样带 --type=renderer，
+// 曾经因此把用户 Chrome / Edge 的渲染进程一起杀掉（实际发生过）。
 package procs
 
 import (
@@ -25,12 +44,12 @@ type Proc struct {
 	// ParentPID 是父进程 PID（0 表示未知）。
 	ParentPID int
 	// ParentCmdLine 是父进程的命令行。
-	//
-	// 用来区分「桌面版自己的 sidecar」和「用户 agy CLI 的 sidecar」：
-	// 两者命令行长得一样，但父进程不同——
-	//   - 桌面版 sidecar 的父进程是 Electron（命令行含 --proxy-server 等）
-	//   - agy CLI sidecar 的父进程是 cmd.exe /c "...agy-node.cmd" ...
 	ParentCmdLine string
+	// ExePath 是可执行文件的绝对路径（可能为空）。
+	//
+	// **这是最可靠的判据**：操作系统给出的真实路径，
+	// 不受进程名重名、命令行伪装的影响。
+	ExePath string
 }
 
 // String 用于 CLI 输出。
@@ -50,6 +69,10 @@ func (p Proc) String() string {
 // （实测 PID 81832 / 77584 就是桌面版的），
 // 只按第 1 条判断会把桌面版自己的 sidecar 误判成 CLI 的，从而漏杀，
 // 旧实例就会残留。
+//
+// 注意：CLI sidecar 的 exe 路径与桌面版**相同**
+// （都是 %LOCALAPPDATA%\Programs\antigravity\Antigravity.exe），
+// 所以路径前缀判据区分不了二者，必须靠这条命令��特征。
 func (p Proc) IsSidecar() bool {
 	cl := strings.ToLower(p.CmdLine)
 	if !strings.Contains(cl, "--import=file://") {
@@ -62,6 +85,45 @@ func (p Proc) IsSidecar() bool {
 	}
 	// 父进程是 agy-node.cmd 才是 CLI 会话。
 	return strings.Contains(strings.ToLower(p.ParentCmdLine), "agy-node.cmd")
+}
+
+// HasExeUnder 判断这个进程的可执行文件是否位于给定目录下。
+//
+// 用它做"这是不是 Antigravity"的认定：
+//   - Chrome 在 C:\Program Files\Google\Chrome\Application\
+//   - Edge  在 C:\Program Files (x86)\Microsoft\Edge\Application\
+//   - Antigravity 在 %LOCALAPPDATA%\Programs\antigravity\
+//
+// 三者路径不同，**不可能误判**。
+//
+// 路径比较用不区分大小写 + 分隔符归一化，
+// 因为 Windows 上路径分隔符可能是 \ 或 /，盘符大小写也可能不同。
+func (p Proc) HasExeUnder(dir string) bool {
+	if p.ExePath == "" || dir == "" {
+		return false
+	}
+	return pathHasPrefix(p.ExePath, dir)
+}
+
+// pathHasPrefix 判断 path 是否在 dir 之下（目录边界正确）。
+//
+// "C:\Program Files\Google\Chrome" 不应被当成
+// "C:\Program Files\Google\Chrome\Application" 的前缀，反之亦然。
+func pathHasPrefix(path, dir string) bool {
+	path = normalizePath(path)
+	dir = normalizePath(dir)
+	dir = strings.TrimRight(dir, "/")
+	if path == dir {
+		return true
+	}
+	return strings.HasPrefix(path, dir+"/")
+}
+
+// normalizePath 把路径归一化：小写 + 反斜杠转正斜杠 + 去尾斜杠。
+func normalizePath(p string) string {
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = strings.TrimRight(p, "/")
+	return strings.ToLower(p)
 }
 
 // List 列出本机所有进程。
@@ -82,7 +144,6 @@ func Find(name string) ([]Proc, error) {
 		return nil, err
 	}
 	target := strings.ToLower(name)
-	// 同时接受带扩展名的输入
 	targetBase := strings.TrimSuffix(target, ".exe")
 
 	var out []Proc
@@ -105,13 +166,9 @@ func Find(name string) ([]Proc, error) {
 //
 // 所以调用方给一份候选列表，而不是一个名字。
 //
-// 实现要点：
-//  1. 必须返回**全部**同名进程。Electron 桌面版会同时起十几个
-//     Antigravity.exe（主进程 + 渲染进程 + GPU 进程 + utility 进程），
-//     只杀一个等于没杀。
-//  2. 默认**排除** agy CLI 的 Node sidecar（见 Proc.IsSidecar）——
-//     它同名但属于用户的 CLI 会话，不该被桌面版的终止流程杀掉。
-//     要连它一起杀时用 FindAnyIncludingSidecar。
+// 实现要点：必须返回**全部**同名进程。Electron 桌面版会同时起
+// 十几个 Antigravity.exe（主进程 + 渲染进程 + GPU 进程 + utility 进程），
+// 只杀一个等于没杀。
 //
 // 曾经踩过的坑：用 map[name]proc 索引会只留下最后一个同名进程，
 // 于是只 kill 了一个，其余 Electron 进程还活着——
@@ -124,52 +181,6 @@ func FindAny(names []string) ([]Proc, error) {
 // Node sidecar。用于「用户明确要求把所有 Antigravity 相关进程都停掉」。
 func FindAnyIncludingSidecar(names []string) ([]Proc, error) {
 	return findAny(names, true)
-}
-
-// IsDesktopApp 判断这个进程**看起来像** Electron 应用的一个子进程。
-//
-// 桌面版 Electron 进程的共同特征：
-//   - 主进程命令行带 --proxy-server / --proxy-bypass-list
-//     （由 agy-untun 注入；用户从开始菜单启动时没有）
-//   - 子进程命令行带 --type=gpu-process / --type=utility / --type=renderer
-//   - 都有 --user-data-dir=...AppData\Roaming\Antigravity
-//
-// ⚠️ **这个函数单独用是不安全的**。
-// Chrome / Edge 的渲染进程命令行同样带 --type=renderer，
-// 所以它的返回值**必须**与进程名一起判断——
-// 先确认进程名是 Antigravity，再看这个标志。
-// 调用方请用 IsIdeProcess（名字 + 命令行双判据）而不是这个。
-func (p Proc) IsDesktopApp() bool {
-	cl := strings.ToLower(p.CmdLine)
-	if cl == "" {
-		return false
-	}
-	if strings.Contains(cl, "--user-data-dir=") {
-		return true
-	}
-	return strings.Contains(cl, "--type=gpu-process") ||
-		strings.Contains(cl, "--type=renderer") ||
-		strings.Contains(cl, "--type=utility") ||
-		strings.Contains(cl, "--proxy-server")
-}
-
-// IsIdeProcess 判断这个进程是不是 Antigravity 桌面版的一部分。
-//
-// **两道过滤都要过**：
-//  1. 进程名是 Antigravity / language_server —— 排除 Chrome / Edge。
-//  2. 命令行符合 Electron 桌面版的特征 —— 排除 agy CLI 的同名 sidecar。
-//
-// 这个函数是"要不要杀掉它"的唯一判据。
-func (p Proc) IsIdeProcess() bool {
-	name := strings.ToLower(p.Name)
-	name = strings.TrimSuffix(name, ".exe")
-	if name != "antigravity" && name != "language_server" {
-		return false
-	}
-	if name == "language_server" {
-		return true
-	}
-	return p.IsDesktopApp()
 }
 
 func findAny(names []string, includeSidecar bool) ([]Proc, error) {
@@ -208,13 +219,43 @@ func findAny(names []string, includeSidecar bool) ([]Proc, error) {
 	return out, nil
 }
 
+// Descendants 返回以 root 为根的整棵进程树（含 root 自己）。
+//
+// 用 PPID 往上走：先找出所有 parent 是 root 的进程，
+// 再递归。这是"桌面版主进程派生的子进程"的可靠认定方式——
+// 子进程的命令行可能千奇百怪，但它们的**祖先**一定是桌面版。
+func Descendants(all []Proc, root int) []Proc {
+	children := map[int][]Proc{}
+	for _, p := range all {
+		if p.ParentPID > 0 {
+			children[p.ParentPID] = append(children[p.ParentPID], p)
+		}
+	}
+
+	var out []Proc
+	seen := map[int]bool{}
+	var walk func(pid int)
+	walk = func(pid int) {
+		if seen[pid] {
+			return
+		}
+		seen[pid] = true
+		for _, p := range children[pid] {
+			out = append(out, p)
+			walk(p.PID)
+		}
+	}
+	walk(root)
+	return out
+}
+
 // Atoi 是 strconv.Atoi 的别名，保持本包自洽。
 func Atoi(s string) int {
 	n, _ := strconv.Atoi(strings.TrimSpace(s))
 	return n
 }
 
-// listPorts 供各平台实现使用：把 ps 的 PID 列解析成整数。
+// parsePID 解析 PID 字符串。
 func parsePID(s string) int {
 	return Atoi(s)
 }

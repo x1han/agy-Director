@@ -20,11 +20,11 @@ import (
 type launchOptions struct {
 	forceIDE bool
 	forceCLI bool
-	channel   string
-	proxyURL  string
-	scan      bool
-	yes       bool
-	passArgs  []string
+	channel  string
+	proxyURL string
+	scan     bool
+	yes      bool
+	passArgs []string
 }
 
 // parseLaunchArgs 解析 launch 的命令行参数。
@@ -118,11 +118,33 @@ func runLaunch(args []string) error {
 	//    Antigravity 会用登录 shell 的环境覆盖我们注入的代理变量
 	//    （dist/languageServer.js: `const env = { ...process.env, ...loginShellEnv }`），
 	//    且没有任何开关能跳过这一步。
-	//    检测到冲突就**红字报错拦住**，把变量名告诉用户让他自己改——
+	//
+	//    但覆盖是**逐键**的，且登录 shell 本身**继承**了我们注入的值
+	//    （dist/loginShellEnv.js 的 spawn 带着 `{ ...process.env, ...INJECTED_ENV }`）。
+	//    所以只有用户的 rc 文件**显式 export 了同名变量**才会真冲突，
+	//    而且必须比值：
+	//
+	//      · 值相同        → 不是冲突（shell 只是回显了我们）
+	//      · 只有小写名不同 → 警告（httpproxy 大写优先，Antigravity 不受影响，
+	//                        但只认小写的第三方工具会走错）
+	//      · 大写名不同   → 致命（通道会直接失效），红字报错拦住
+	//
 	//    我们绝不触碰用户的 .bashrc/.zshrc/.profile。
-	if conflicts := shellenv.Detect(5 * time.Second); len(conflicts) > 0 {
-		fmt.Fprint(os.Stderr, shellenv.Report(conflicts))
+	inj := shellenv.Injection{
+		HTTPProxy:  ch.URL(),
+		HTTPSProxy: ch.URL(),
+		NoProxy:    channel.JoinNoProxy(os.Getenv("NO_PROXY")),
+	}
+	if ch.Scheme == channel.SchemeSOCKS5 {
+		inj.AllProxy = ch.URL()
+	}
+	conflicts := shellenv.Detect(5*time.Second, inj)
+	if fatal := shellenv.Fatal(conflicts); len(fatal) > 0 {
+		fmt.Fprint(os.Stderr, shellenv.Report(fatal, true))
 		return fmt.Errorf("登录 shell 里存在会覆盖代理的变量，已中止启动")
+	} else if len(conflicts) > 0 {
+		// 只是警告：不影响 Antigravity 自己的流量，但要说清楚。
+		fmt.Fprint(os.Stderr, shellenv.Report(conflicts, false))
 	}
 
 	// 5) 启动
@@ -158,9 +180,9 @@ func runLaunch(args []string) error {
 	)
 
 	if _, err := launcher.Launch(context.Background(), launcher.Options{
-		Channel: *ch,
-		Target:  target.Path,
-		Args:    launchArgs,
+		Channel:  *ch,
+		Target:   target.Path,
+		Args:     launchArgs,
 		Detached: true,
 	}); err != nil {
 		return fmt.Errorf("启动失败: %w", err)
@@ -173,22 +195,71 @@ func runLaunch(args []string) error {
 //
 // Chromium 用分号分隔，Go 的 NO_PROXY 用逗号分隔，格式不同要转。
 // Chromium 支持 "<local>" 表示所有不含点的主机名（对应内网）。
+// chromiumBypassList 生成 --proxy-bypass-list 的值。
+//
+// ── 两套语法并不等价，必须转换 ──────────────────────────────────────
+//
+// Go 的 NO_PROXY（逗号分隔）      Chromium 的 bypass list（分号或逗号）
+//
+//	foo.com        匹配 foo.com    foo.com       同左
+//	.foo.com       匹配所有子域名   .foo.com      ❌ 无效，要写 *.foo.com
+//	                                   *.foo.com    只匹配子域名，
+//	                                              **不匹配**裸域名 foo.com
+//	(无)           —              <local>       所有不含点号的主机名
+//
+// 所以对以 "." 开头的条目（Go 的"含子域"写法）：
+//  1. 转成 "*.foo.com"
+//  2. 同时补上 "foo.com"（因为 *.foo.com 不匹配裸域名）
+//
+// 另外固定追加 "<local>"：Chromium 内置的"简单主机名"规则，
+// NO_PROXY 没有对应写法。
+//
+// 带端口的条目（127.0.0.1:8080）两边都支持，直接用。
 func chromiumBypassList(ch channel.Channel) string {
 	noProxy := channel.JoinNoProxy(os.Getenv("NO_PROXY"))
-	parts := strings.Split(noProxy, ",")
-	out := make([]string, 0, len(parts)+1)
-	for _, p := range parts {
+
+	var out []string
+	seen := map[string]bool{}
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+
+	for _, p := range strings.Split(noProxy, ",") {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
 		}
-		// Go 的无端口写法与 Chromium 一致，直接用。
-		out = append(out, p)
+
+		if strings.HasPrefix(p, ".") {
+			// ".foo.com" -> "*.foo.com" + "foo.com"
+			//
+			// 注意 "*." 不能省：Chromium 的通配符语法是 "*.foo.com"，
+			// 写成 "*foo.com" 匹配不到任何东西。
+			base := strings.TrimPrefix(p, ".")
+			if base == "" {
+				continue
+			}
+			add("*." + base)
+			add(base)
+			continue
+		}
+
+		add(p)
 	}
+
+	// Chromium 内置规则：不含点号的主机名一律不走代理。
+	add("<local>")
+
 	// 通道自己所在的回环端口不能被代理（代理服务器本身）。
 	if ch.Host != "" {
-		out = append(out, ch.Addr())
+		add(ch.Addr())
 	}
+
 	return strings.Join(out, ";")
 }
 

@@ -7,7 +7,8 @@ import (
 
 // versionPattern 从 CDP 的 User-Agent 里提取 Antigravity 版本。
 // 实测返回形如：
-//   ... Antigravity/2.32.1 Chrome/152.0.7977.167 Electron/44.9.1 ...
+//
+//	... Antigravity/2.32.1 Chrome/152.0.7977.167 Electron/44.9.1 ...
 var versionPattern = regexp.MustCompile(`Antigravity/([0-9]+\.[0-9]+\.[0-9]+)`)
 
 // parseVersionFromUserAgent 从 /json/version 的 JSON 里取出版本。

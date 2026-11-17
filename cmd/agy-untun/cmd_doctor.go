@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -86,15 +87,21 @@ func runDoctor(args []string) error {
 	if runtime.GOOS == "windows" {
 		fmt.Println("  · Windows 上 Antigravity 不读登录 shell 的环境变量，无此冲突")
 	} else {
-		conflicts := shellenv.Detect(5 * time.Second)
+		conflicts := shellenv.Detect(5*time.Second, shellenv.Injection{
+			HTTPProxy:  os.Getenv("HTTP_PROXY"),
+			HTTPSProxy: os.Getenv("HTTPS_PROXY"),
+			AllProxy:   os.Getenv("ALL_PROXY"),
+			NoProxy:    os.Getenv("NO_PROXY"),
+		})
 		if len(conflicts) == 0 {
 			fmt.Println("  ✓ 未发现冲突")
 		} else {
 			for _, c := range conflicts {
-				fmt.Printf("  ⚠ %s\n", c.String())
+				fmt.Printf("  %s\n", c.String())
 			}
-			fmt.Println("    Antigravity 会用登录 shell 的值覆盖启动器注入的值，")
-			fmt.Println("    导致通道失效。需要你手动从 rc 文件里移除这些 export。")
+			fmt.Println("    Antigravity 会用登录 shell 的值覆盖启动器注入的值。")
+			fmt.Println("    致命档（大写名被改）必须先处理；警告档只影响第三方工具。")
+			fmt.Println("    需要你手动从 rc 文件里移除这些 export。")
 			fmt.Println("    （agy-untun 绝不修改你的 shell 配置文件。）")
 		}
 	}
@@ -157,18 +164,11 @@ func listKillTargets() error {
 
 	fmt.Println("将会被终止的进程（桌面版 + Go 后端）:")
 	fmt.Println(strings.Repeat("-", 60))
-	n := 0
-	for _, p := range all {
-		if p.IsSidecar() {
-			continue
-		}
-		if !p.IsIdeProcess() {
-			continue
-		}
-		fmt.Printf("  %s\n", p.String())
-		n++
+	targets := ideKillTargets(all)
+	for _, p := range targets {
+		fmt.Printf("  %s  %s\n", p.String(), p.ExePath)
 	}
-	if n == 0 {
+	if len(targets) == 0 {
 		fmt.Println("  （无）")
 	}
 
@@ -178,7 +178,7 @@ func listKillTargets() error {
 	m := 0
 	for _, p := range all {
 		if p.IsSidecar() {
-			fmt.Printf("  %s\n", p.String())
+			fmt.Printf("  %s  %s\n", p.String(), p.ExePath)
 			m++
 		}
 	}
@@ -215,8 +215,16 @@ func cliRunning() bool {
 // readShellProxyConflicts 已移到 internal/shellenv。
 // 保留这个名字是为了不破坏 doctor 的其它引用点；
 // 实现完全一致：只读检测，绝不修改用户的 shell 配置文件。
+//
+// 比对基准取当前进程自己的代理环境变量——doctor 是诊断工具，
+// 此时还没有选定通道，所以用"登录 shell 的值 vs 我自己的值"来比。
 func readShellProxyConflicts() []string {
-	conflicts := shellenv.Detect(5 * time.Second)
+	conflicts := shellenv.Detect(5*time.Second, shellenv.Injection{
+		HTTPProxy:  os.Getenv("HTTP_PROXY"),
+		HTTPSProxy: os.Getenv("HTTPS_PROXY"),
+		AllProxy:   os.Getenv("ALL_PROXY"),
+		NoProxy:    os.Getenv("NO_PROXY"),
+	})
 	out := make([]string, 0, len(conflicts))
 	for _, c := range conflicts {
 		out = append(out, c.String())
@@ -280,44 +288,55 @@ var ideProcessNames = []string{
 
 // terminateIDE 终止正在运行的桌面版实例。
 //
-// 分三类处理：
-//  1. **桌面版 Electron 进程**（命令行含 --user-data-dir / --type=gpu-process
-//     / --proxy-server）—— 这些必须全部杀掉，只杀主进程会留下渲染进程，
-//     而 requestSingleInstanceLock 仍被占用。
-//  2. **Go 后端 language_server** —— 独立进程树，必须单独杀。
-//  3. **agy CLI 的 Node sidecar**（父进程是 agy-node.cmd）——
-//     **不杀**，那是用户的 CLI 会话，与桌面版无关。
+// ── 判据（按可靠性排序）──────────────────────────────────────────
 //
-// 容忍"进程已经不在"的情况：taskkill 对找不到的进程返回 exit 128，
-// pkill 对没有匹配进程返回 exit 1。这两种都不该算失败。
+//  1. **可执行文件绝对路径前缀**（首选）
+//     桌面版 Antigravity.exe 装在已知目录，进程的 exe 路径落在
+//     那个前缀下 → 一定是它。
+//     Chrome 在 C:\Program Files\Google\Chrome\Application\，
+//     Edge  在 C:\Program Files (x86)\Microsoft\Edge\Application\，
+//     路径不同，**不可能误判**。
+//
+//  2. **进程树**（次选）
+//     桌面版主进程派生的子进程（渲染 / GPU / utility），
+//     沿 PPID 往上走能认出来。子进程的命令行千奇百怪，
+//     但它们的祖先一定是桌面版。
+//
+//  3. 命令行特征（**只用来排除**，从不用来认定）
+//
+// ── 三条红线 ────────────────────────────────────────────────────
+//
+//	a. **绝不**用 `taskkill /IM Antigravity.exe` 这类按镜像名的盲杀。
+//	   Antigravity.exe 同时是 agy CLI 的 Node sidecar 的名字，
+//	   盲杀会干掉用户的 CLI 会话。
+//	   拿不到精确的进程信息时**宁可不杀**，报错让用户手动关。
+//
+//	b. **绝不**用命令行特征来"认定"一个进程是 Antigravity。
+//	   Chromium 的渲染进程命令行也带 --type=renderer，
+//	   曾经因此把用户的 Chrome / Edge 渲染进程一起杀掉（实际发生过）。
+//
+//	c. agy CLI 的 Node sidecar（父进程是 agy-node.cmd）**不杀**。
+//	   注意它与桌面版的 exe 路径**相同**，路径判据区分不了，
+//	   必须靠这条命令行特征排除。
 //
 // 失败时把**精确的 PID** 报出来，让用户能自己手动结束。
 func terminateIDE(inst launcher.RunningInstance) error {
 	all, err := procs.List()
 	if err != nil {
-		return fallbackTerminate()
+		// 拿不到精确的进程信息 → **不杀**。
+		// 宁可让用户自己点一下，也不误杀他的浏览器或 CLI 会话。
+		return fmt.Errorf(
+			"无法读取进程列表（%v），已放弃自动终止。\n"+
+				"请手动关闭 Antigravity 桌面版后重试。\n"+
+				"（说明：Antigravity.exe 这个名字同时属于 agy CLI 的 sidecar，"+
+				"按名字盲杀会误伤你的 CLI 会话，所以这里不做猜测。）", err)
 	}
 
-	var desktop, backend []procs.Proc
-	for _, p := range all {
-		name := strings.ToLower(p.Name)
-		switch {
-		case p.IsSidecar():
-			// agy CLI 的 sidecar —— 不动。
-		case strings.Contains(name, "language_server"):
-			backend = append(backend, p)
-		case isIdeName(name) && p.IsIdeProcess():
-			// 名字 + 命令行双判据，缺一不可。
-			// 只看命令行会把 Chrome / Edge 的渲染进程一起杀掉
-			// （它们的命令行也带 --type=renderer）——
-			// 这是实测踩到过的坑：曾经一启动 terminate 就把 Chrome 干掉了。
-			desktop = append(desktop, p)
-		}
-	}
-
-	targets := append(desktop, backend...)
+	targets := ideKillTargets(all)
 	if len(targets) == 0 {
-		return fallbackTerminate()
+		return fmt.Errorf(
+			"没有找到需要终止的 Antigravity 进程。\n" +
+				"请手动关闭 Antigravity 桌面版后重试。")
 	}
 
 	var failures []string
@@ -333,39 +352,117 @@ func terminateIDE(inst launcher.RunningInstance) error {
 	return nil
 }
 
-// fallbackTerminate 在拿不到进程列表时按镜像名杀。
+// ideKillTargets 从进程列表里挑出「该杀的」那些。
 //
-// ⚠️ 代价明确：Windows 上 Antigravity.exe 这个镜像名**同时**是
-// agy CLI 的 Node sidecar 的名字，所以 taskkill /IM 会连带干掉
-// 用户的 CLI 会话。因此这条路只在进程列表不可用时才走
-// （正常路径不会到这里），并且**必须**先打印一条警告。
-func fallbackTerminate() error {
-	fmt.Fprintln(os.Stderr,
-		"⚠ 无法读取进程列表，退回到按镜像名终止。")
-	fmt.Fprintln(os.Stderr,
-		"  这可能会连带结束 agy CLI 的同名 sidecar 进程。")
+// 判定顺序：
+//  1. Go 后端 language_server —— 名字唯一，不会认错，直接要。
+//  2. 桌面版主进程 —— 用 exe 路径前缀认。
+//  3. 桌面版的子进程 —— 沿进程树认。
+//  4. agy CLI 的 sidecar —— 排除。
+func ideKillTargets(all []procs.Proc) []procs.Proc {
+	// 桌面版安装目录（exe 路径前缀）。
+	dirs := ideInstallDirs()
 
-	if runtime.GOOS == "windows" {
-		err := exec.Command("taskkill", "/F", "/IM", "Antigravity.exe").Run()
-		if err != nil {
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
-				return nil
-			}
-			return err
+	var backend, desktop []procs.Proc
+	roots := map[int]bool{}
+
+	for _, p := range all {
+		name := strings.ToLower(p.Name)
+		switch {
+		case strings.Contains(name, "language_server"):
+			// Go 后端：独立进程树，名字唯一，直接要。
+			backend = append(backend, p)
+
+		case p.IsSidecar():
+			// agy CLI 的 Node sidecar —— 排除。
+			// 注意它的 exe 路径与桌面版相同，靠路径分不出来。
+
+		case ideExeUnder(p, dirs):
+			// exe 路径落在 Antigravity 安装目录下 —— 一定是它。
+			desktop = append(desktop, p)
+			roots[p.PID] = true
 		}
-		return nil
 	}
 
-	err := exec.Command("pkill", "-f", "Antigravity.app").Run()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return nil
+	// 桌面版主进程的子孙进程（渲染 / GPU / utility）。
+	// 这些的 exe 路径也在安装目录下，上面已经收进来了；
+	// 这里再补一遍进程树，覆盖那些 exe 路径取不到的情况
+	// （例如某些进程没有权限读路径）。
+	for _, p := range all {
+		if p.IsSidecar() {
+			continue
 		}
-		return err
+		if !isIdeName(strings.ToLower(p.Name)) {
+			continue
+		}
+		if ideExeUnder(p, dirs) {
+			continue // 已收
+		}
+		if ideDescendsFrom(p, all, roots) {
+			desktop = append(desktop, p)
+		}
 	}
-	return nil
+
+	return append(desktop, backend...)
+}
+
+// ideInstallDirs 返回 Antigravity 桌面版可能的安装目录。
+//
+// 取自 discovery.IDECandidates 的实际安装位置，
+// 也就是用户真的装了它的那几个路径。
+//
+// ⚠️ 只取**精确的安装目录**，不取它的父目录。
+// 曾经取过 %LOCALAPPDATA%\Programs，那会把同一个目录下的
+// 别的应用（WinDynamicDesktop、codync-host…）一起收进来，
+// 差点误杀用户的程序。
+//
+// Go 后端在 resources\bin 下，是桌面版目录的子目录，
+// 所以它自然被包含在前缀里——不需要单独列。
+func ideInstallDirs() []string {
+	var dirs []string
+	seen := map[string]bool{}
+	for _, exe := range discovery.IDECandidates() {
+		d := filepath.Dir(exe)
+		if d == "" || seen[strings.ToLower(d)] {
+			continue
+		}
+		seen[strings.ToLower(d)] = true
+		dirs = append(dirs, d)
+	}
+	return dirs
+}
+
+// ideExeUnder 判断进程的 exe 路径是否落在任一安装目录下。
+func ideExeUnder(p procs.Proc, dirs []string) bool {
+	for _, d := range dirs {
+		if d != "" && p.HasExeUnder(d) {
+			return true
+		}
+	}
+	return false
+}
+
+// ideDescendsFrom 判断 p 是否是某个 root 的后代。
+func ideDescendsFrom(p procs.Proc, all []procs.Proc, roots map[int]bool) bool {
+	byPID := map[int]procs.Proc{}
+	for _, x := range all {
+		byPID[x.PID] = x
+	}
+	cur := p
+	for i := 0; i < 32; i++ { // 防止环
+		if cur.ParentPID <= 0 {
+			return false
+		}
+		if roots[cur.ParentPID] {
+			return true
+		}
+		next, ok := byPID[cur.ParentPID]
+		if !ok {
+			return false
+		}
+		cur = next
+	}
+	return false
 }
 
 // killPID 精确终止一个 PID。

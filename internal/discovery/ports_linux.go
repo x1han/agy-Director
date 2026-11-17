@@ -4,12 +4,8 @@ package discovery
 
 import (
 	"bufio"
-	"encoding/binary"
-	"encoding/hex"
 	"fmt"
-	"net"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -68,6 +64,12 @@ func parseProcNetTCP(path string) ([]ListenPort, error) {
 			continue
 		}
 		// state == "0A" 表示 LISTEN
+		//
+		// ⚠️ 列号：/proc/net/tcp 的列是
+		//	sl local_address rem_address st tx_queue:rx_queue ...
+		//	st 是**第 4 列**（下标 3），local_address 是**第 2 列**（下标 1）。
+		// 早期版本误把 st 当成第 3 列（下标 2，那是 rem_address），
+		// 于是把每一行都判成非 LISTEN，表读出来是空的。
 		if fields[3] != "0A" {
 			continue
 		}
@@ -80,45 +82,4 @@ func parseProcNetTCP(path string) ([]ListenPort, error) {
 	return out, scanner.Err()
 }
 
-// parseHexAddr 解析 /proc/net/tcp 的 "0100007F:1F90"。
-//
-// IPv4 是小端 hex：0100007F -> 127.0.0.1
-// IPv6 是 4 组小端 32 位 word。
-func parseHexAddr(s string) (string, int, bool) {
-	idx := strings.LastIndex(s, ":")
-	if idx < 0 {
-		return "", 0, false
-	}
-	hexIP, hexPort := s[:idx], s[idx+1:]
-
-	port, err := strconv.ParseUint(hexPort, 16, 32)
-	if err != nil || port == 0 {
-		return "", 0, false
-	}
-
-	ipBytes, err := hex.DecodeString(hexIP)
-	if err != nil || len(ipBytes) != net.IPv6len {
-		return "", 0, false
-	}
-
-	// /proc/net/tcp 用的是网络字节序的十六进制视图，
-	// 直接按 4 字节一组反转即可还原。
-	if len(ipBytes) == 4 {
-		ipBytes = []byte{ipBytes[3], ipBytes[2], ipBytes[1], ipBytes[0]}
-		return net.IP(ipBytes).String(), int(port), true
-	}
-
-	// IPv6：4 个 32 位 word，每个 word 内部小端
-	var ipv6 [16]byte
-	for w := 0; w < 4; w++ {
-		word := ipBytes[w*4 : w*4+4]
-		ipv6[w*4+0] = word[3]
-		ipv6[w*4+1] = word[2]
-		ipv6[w*4+2] = word[1]
-		ipv6[w*4+3] = word[0]
-	}
-	return net.IP(ipv6[:]).String(), int(port), true
-}
-
-// unusedBinary 保留 binary 引用（供将来解析二进制格式时用）。
-var _ = binary.LittleEndian
+// parseHexAddr 见 hexaddr.go（无平台依赖，便于跨平台单测）。
