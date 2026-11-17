@@ -27,7 +27,6 @@ func listenPorts() ([]ListenPort, error) {
 	}
 
 	var outPorts []ListenPort
-	seen := map[string]bool{}
 
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
@@ -61,18 +60,15 @@ func listenPorts() ([]ListenPort, error) {
 		}
 
 		normHost, wildcard := normalizeListenHost(host)
-		key := fmt.Sprintf("%s:%d", normHost, port)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
 		outPorts = append(outPorts, ListenPort{Host: normHost, Port: port, Wildcard: wildcard})
 	}
 
 	if len(outPorts) == 0 {
 		return nil, fmt.Errorf("lsof 没有读到任何监听端口")
 	}
-	return outPorts, nil
+	// 去重放最后：同一条监听可能同时以通配和具体形式出现，
+	// 这时要保留通配标记（见 dedupeListenPorts）。
+	return dedupeListenPorts(outPorts), nil
 }
 
 // splitListenAddr 见 listenaddr.go（无平台依赖，便于跨平台单测）。

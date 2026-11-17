@@ -87,16 +87,25 @@ func runDoctor(args []string) error {
 	if runtime.GOOS == "windows" {
 		fmt.Println("  · Windows 上 Antigravity 不读登录 shell 的环境变量，无此冲突")
 	} else {
-		conflicts := shellenv.Detect(5*time.Second, shellenv.Injection{
+		// ⚠️ 比对基准用**原始**值（HostNoProxy），不用合并过的
+		// EffectiveNoProxy()。doctor 此刻还没有选定通道，
+		// 问的是"登录 shell 的值 vs 我自己进程里的值"；
+		// 拿合并过的值当基准会把回环项算成差异，产生假冲突。
+		result := shellenv.Detect(5*time.Second, shellenv.Injection{
 			HTTPProxy:  os.Getenv("HTTP_PROXY"),
 			HTTPSProxy: os.Getenv("HTTPS_PROXY"),
 			AllProxy:   os.Getenv("ALL_PROXY"),
-			NoProxy:    os.Getenv("NO_PROXY"),
+			NoProxy:    channel.HostNoProxy(),
 		})
-		if len(conflicts) == 0 {
+		if result.Inconclusive {
+			// ⚠️ "没能确认"和"没发现冲突"是两回事，不能同时报。
+			fmt.Printf("  ⚠ 没能读取登录 shell 的环境，无法确认有无冲突（%v）\n", result.Err)
+			fmt.Println("    预检只等 5 秒，Antigravity 自己最多等 10 秒；")
+			fmt.Println("    如果 rc 文件很慢，可能出现「预检放弃、Antigravity 读到了并撞上冲突」。")
+		} else if len(result.Conflicts) == 0 {
 			fmt.Println("  ✓ 未发现冲突")
 		} else {
-			for _, c := range conflicts {
+			for _, c := range result.Conflicts {
 				fmt.Printf("  %s\n", c.String())
 			}
 			fmt.Println("    Antigravity 会用登录 shell 的值覆盖启动器注入的值。")
@@ -210,26 +219,6 @@ func cliRunning() bool {
 	}
 	out, err := exec.Command("pgrep", "-x", "agy").Output()
 	return err == nil && strings.TrimSpace(string(out)) != ""
-}
-
-// readShellProxyConflicts 已移到 internal/shellenv。
-// 保留这个名字是为了不破坏 doctor 的其它引用点；
-// 实现完全一致：只读检测，绝不修改用户的 shell 配置文件。
-//
-// 比对基准取当前进程自己的代理环境变量——doctor 是诊断工具，
-// 此时还没有选定通道，所以用"登录 shell 的值 vs 我自己的值"来比。
-func readShellProxyConflicts() []string {
-	conflicts := shellenv.Detect(5*time.Second, shellenv.Injection{
-		HTTPProxy:  os.Getenv("HTTP_PROXY"),
-		HTTPSProxy: os.Getenv("HTTPS_PROXY"),
-		AllProxy:   os.Getenv("ALL_PROXY"),
-		NoProxy:    os.Getenv("NO_PROXY"),
-	})
-	out := make([]string, 0, len(conflicts))
-	for _, c := range conflicts {
-		out = append(out, c.String())
-	}
-	return out
 }
 
 // runWrap 在代理环境变量下运行任意命令。

@@ -23,7 +23,7 @@ import (
 // /proc/net/tcp 里绝大多数条目是 IPv4，结果等于整个表读不到。
 //
 // 这个函数没有平台依赖，所以放在无 build tag 的文件里，
-// 这样 Windows 上也能跑单元测试（ports_linux_test.go）。
+// 这样 Windows 上也能跑单元测试（hexaddr_test.go）。
 func parseHexAddr(s string) (string, int, bool) {
 	idx := strings.LastIndex(s, ":")
 	if idx < 0 {

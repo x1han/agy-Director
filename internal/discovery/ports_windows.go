@@ -144,7 +144,9 @@ func listenPorts() ([]ListenPort, error) {
 		out = append(out, parseIPv6Rows(v6)...)
 	}
 
-	return out, nil
+	// 去重放最后：IPv4 的 0.0.0.0 与 IPv6 的 ::ffff:0.0.0.0
+	// 归一化后可能是同一个 host:port，这时要保留通配标记。
+	return dedupeListenPorts(out), nil
 }
 
 // fetchTCPTable 取一张 TCP 表的原始字节。
@@ -201,7 +203,6 @@ func parseIPv4Rows(buf []byte) []ListenPort {
 		count = (len(buf) - 4) / rowSize
 	}
 
-	seen := map[string]bool{}
 	var out []ListenPort
 
 	for i := 0; i < count; i++ {
@@ -224,11 +225,6 @@ func parseIPv4Rows(buf []byte) []ListenPort {
 		portBytes := (*[2]byte)(unsafe.Pointer(&row.dwLocalPort))
 		port := int(binary.BigEndian.Uint16(portBytes[:]))
 
-		key := fmt.Sprintf("%s:%d", host, port)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
 		out = append(out, ListenPort{
 			Host:     host,
 			Port:     port,
@@ -253,7 +249,6 @@ func parseIPv6Rows(buf []byte) []ListenPort {
 		count = (len(buf) - 4) / rowSize
 	}
 
-	seen := map[string]bool{}
 	var out []ListenPort
 
 	for i := 0; i < count; i++ {
@@ -275,11 +270,6 @@ func parseIPv6Rows(buf []byte) []ListenPort {
 			continue
 		}
 
-		key := fmt.Sprintf("%s:%d", host, port)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
 		out = append(out, ListenPort{
 			Host:     host,
 			Port:     port,

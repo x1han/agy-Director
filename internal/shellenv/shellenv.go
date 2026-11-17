@@ -21,18 +21,30 @@
 // **代理变量不在这个集合里**，所以登录 shell 里 export 的
 // http_proxy / https_proxy 会**覆盖**我们注入的值。
 //
-// ## 关键细节：覆盖是"按名字逐个"的，不是"整个环境块替换"
+// ## 关键细节一：覆盖是"按名字逐个"的，不是"整个环境块替换"
 //
 // `{ ...process.env, ...loginShellEnv }` 是逐键覆盖：
 // loginShellEnv 里**没有**的键，process.env 的值原样保留。
 //
 // 所以只有「登录 shell 显式 export 了同名代理变量」才会覆盖我们。
-// 而 dist/loginShellEnv.js 的 spawn 带着
+//
+// ## 关键细节二：登录 shell **继承**了我们注入的值
+//
+// dist/loginShellEnv.js 的 spawn 带着：
 //
 //	env: { ...process.env, ...LOGIN_SHELL_INJECTED_ENV }
 //
-// 也就是登录 shell **继承**了我们注入的值——只要用户的 rc 文件
-// 没有再显式 export 同一个名字，loginShellEnv 里的代理值就是我们的值。
+// 也就是登录 shell 从我们注入的值出发。只要用户的 rc 文件
+// 没有再显式 export 同一个名字，loginShellEnv 里的代理值
+// 就是我们的值 —— **不是冲突**。
+//
+// 典型会被误判的场景：用户的 .bashrc 里有
+//
+//	export HTTP_PROXY=${HTTP_PROXY:-http://127.0.0.1:7890}
+//
+// 这行只在**父进程没有设 HTTP_PROXY** 时才生效。
+// 预检时必须把注入值带进探测用的 shell，否则会读到 7890，
+// 误判成致命冲突——而真正启动时父进程是有注入值的。
 //
 // ## 因此冲突判定必须看"值"，不能只看"有没有这个变量"
 //
@@ -58,8 +70,10 @@ package shellenv
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -144,6 +158,19 @@ var ProxyVars = []string{
 	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
 }
 
+// AntigravityInjectedEnv 是 Antigravity 自己注入给登录 shell 的变量。
+//
+// 来自 dist/loginShellPolicy.js 的 LOGIN_SHELL_INJECTED_ENV。
+// 预检用的 shell 必须带上同样的值，否则行为与真正启动时不一致：
+// 有的用户在 .zshrc 里判断 ANTIGRAVITY_RESOLVING_ENVIRONMENT
+// 直接跳过耗时初始化，带上它才不会白等。
+var AntigravityInjectedEnv = map[string]string{
+	"ANTIGRAVITY_RESOLVING_ENVIRONMENT": "1",
+	"DISABLE_AUTO_UPDATE":               "true",
+	"ZSH_TMUX_AUTOSTARTED":              "true",
+	"ZSH_TMUX_AUTOSTART":                "false",
+}
+
 // Conflict 是检测到的一个冲突。
 type Conflict struct {
 	// Name 是变量名，如 "http_proxy"。
@@ -163,21 +190,53 @@ func (c Conflict) String() string {
 	return fmt.Sprintf("%s=%s  (%s · %s)", c.Name, c.Value, c.Severity, c.Reason)
 }
 
-// Detect 返回当前登录 shell 里与注入值**不一致**的代理变量。
+// Result 是一次预检的结果。
+type Result struct {
+	// Conflicts 是查到的冲突。
+	Conflicts []Conflict
+	// Inconclusive 为 true 表示**没能读到**登录 shell 的环境
+	// （探测失败或超时），因此无法确认有没有冲突。
+	//
+	// 这不等于"没有冲突"：Antigravity 自己最多等
+	// LOGIN_SHELL_ENV_WAIT_SEC(10s)，我们的预检只等 5s，
+	// 所以存在一个 5–10s 的窗口：预检超时放弃，
+	// Antigravity 却仍然读到了环境并可能撞上致命冲突。
+	// 因此调用方应当**警告**，而不是当作干净。
+	Inconclusive bool
+	// Err 是探测失败的原因（Inconclusive 时有值）。
+	Err error
+}
+
+// Fatal 返回致命的那部分冲突。
+func (r Result) Fatal() []Conflict {
+	var out []Conflict
+	for _, c := range r.Conflicts {
+		if c.Severity == SeverityFatal {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// Detect 在登录 shell 的环境里做只读预检。
 //
 // 只在 macOS/Linux 有意义；Windows 上 Antigravity 的
-// readLoginShellEnv 直接返回 {}，不存在这个覆盖问题，返回 nil。
+// readLoginShellEnv 直接返回 {}，不存在这个覆盖问题。
 //
 // 做法：跑一次 `SHELL -ilc 'env'`，解析出代理变量。
+//
+// ⚠️ **探测用的 shell 必须带上我们要注入的变量**（见 buildProbeEnv），
+// 否则用户 .bashrc 里 `${HTTP_PROXY:-...}` 这类写法会让预检
+// 读到一个真启动时根本不存在的值。
 //
 // 注意这是**只读**的：不改任何 rc 文件，不改任何环境设置。
 // 只是「看一眼登录 shell 里有什么」。
 //
-// timeout 给 5 秒：慢的 rc 文件会让它超时，超时按「查不到」处理，
-// 不阻塞启动。
-func Detect(timeout time.Duration, inj Injection) []Conflict {
+// timeout 给 5 秒：慢的 rc 文件会让它超时，超时按「查不到」处理
+// （Result.Inconclusive = true），不阻塞启动。
+func Detect(timeout time.Duration, inj Injection) Result {
 	if runtime.GOOS == "windows" {
-		return nil
+		return Result{}
 	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -185,11 +244,11 @@ func Detect(timeout time.Duration, inj Injection) []Conflict {
 
 	shell := defaultShell()
 	if shell == "" {
-		return nil
+		return Result{Inconclusive: true, Err: fmt.Errorf("找不到登录 shell")}
 	}
 
 	// 与 Antigravity 自己的做法一致：`-ilc` 交互式登录 shell。
-	// stdout 只取 env 的输出；stderr 丢掉（rc 文件的告警噪音）。
+	// stderr 丢掉（rc 文件的告警噪音）。
 	//
 	// ⚠️ **必须用带 context 的版本**：exec.Command + Output() 没有超时，
 	// 一个卡住的 rc 文件（比如等输入、或起了个后台任务不退出）
@@ -198,15 +257,156 @@ func Detect(timeout time.Duration, inj Injection) []Conflict {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, shell, "-ilc", "env")
-	out, err := cmd.Output()
+	// ⚠️ 用 Antigravity 的**分隔符取帧**方式，不用裸 env。
+	//
+	// 原因：cmd.Output() 要等 stdout **EOF**。如果用户的 rc 文件
+	// 起了个后台任务、它持有 stdout 不退出，预检就会一直等到超时，
+	// 每次启动都报"无法确认"。Antigravity 的做法是：
+	// 命令自己打一个分隔符，解析器在读到收尾分隔符时就停，
+	// 不等 EOF。
+	//
+	// 见 dist/loginShellEnv.js 的 COMMAND 与 parseShellEnvOutput。
+	cmd := exec.CommandContext(ctx, shell, "-ilc", probeCommand())
+	// ⚠️ 关键：把注入值带进探测用的 shell，让预检与真启动一致。
+	cmd.Env = buildProbeEnv(inj)
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		// 查不到不是错误，只是「无法确认是否有冲突」。
-		// 超时也走这条路：查不到就当没有冲突，让用户正常启动。
-		return nil
+		return Result{Inconclusive: true, Err: err}
+	}
+	if err := cmd.Start(); err != nil {
+		return Result{Inconclusive: true, Err: err}
 	}
 
-	return classify(string(out), inj)
+	frame, err := readFramedEnv(stdout, timeout)
+	// 无论成败都要收尸，否则会留下僵尸进程。
+	_ = cmd.Wait()
+	if err != nil {
+		// 查不到**不等于**没有冲突：只能报告"无法确认"。
+		return Result{Inconclusive: true, Err: err}
+	}
+
+	return Result{Conflicts: classify(frame, inj)}
+}
+
+// probeDelimiter 是取帧用的分隔符。
+//
+// 与 Antigravity 的 '_AGY_SHELL_ENV_DELIMITER_' 同思路：
+// 一个足够独特的串，rc 文件里几乎不可能出现。
+const probeDelimiter = "_AGY_UNTUN_SHELL_ENV_DELIMITER_"
+
+// probeCommand 返回探测用的 shell 命令。
+//
+// 与 dist/loginShellEnv.js 的 COMMAND 结构一致：
+//
+//	echo -n "<分隔符>"; /usr/bin/env; echo -n "<分隔符>"; exit
+//
+// 收尾的 exit 是必须的：交互式登录 shell 在 -c 之后可能仍不退出。
+func probeCommand() string {
+	return fmt.Sprintf(`echo -n "%s"; /usr/bin/env; echo -n "%s"; exit`,
+		probeDelimiter, probeDelimiter)
+}
+
+// readFramedEnv 从 stdout 里取出分隔符之间的那一帧。
+//
+// 与 Antigravity 的 parseShellEnvOutput 同思路：
+//   - 帧从第一个分隔符开始；
+//   - 帧在**行首**的下一个分隔符处结束
+//     （env 只在 dash 的 `_=<分隔符>` 形式里打印过一次分隔符，
+//     而 rc 文件留下的后台任务可能在帧之后继续打印）；
+//   - 读到帧就返回，**不等 EOF**。
+//
+// 返回的字符串是帧内的原始文本（交给 classify 解析）。
+func readFramedEnv(r io.Reader, timeout time.Duration) (string, error) {
+	var buf bytes.Buffer
+	chunk := make([]byte, 8192)
+	deadline := time.Now().Add(timeout)
+
+	for {
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("读取登录 shell 环境超时（%v）", timeout)
+		}
+		n, err := r.Read(chunk)
+		if n > 0 {
+			buf.Write(chunk[:n])
+			if frame, ok := extractFrame(buf.String()); ok {
+				return frame, nil
+			}
+		}
+		if err != nil {
+			if frame, ok := extractFrame(buf.String()); ok {
+				return frame, nil
+			}
+			return "", err
+		}
+	}
+}
+
+// extractFrame 从累积的输出里切出那一帧。
+//
+// 找不到完整的帧时返回 ok=false（还要继续读）。
+func extractFrame(s string) (string, bool) {
+	start := strings.Index(s, probeDelimiter)
+	if start < 0 {
+		return "", false
+	}
+	rest := s[start+len(probeDelimiter):]
+	end := strings.Index(rest, "\n"+probeDelimiter)
+	if end < 0 {
+		return "", false
+	}
+	return rest[:end], true
+}
+
+// buildProbeEnv 构造探测用登录 shell 的环境。
+//
+// 目标是**尽量贴近 Antigravity 真正启动时的环境**：
+//
+//  1. 继承当前进程的环境（Antigravity 是
+//     `env: { ...process.env, ...LOGIN_SHELL_INJECTED_ENV }`）。
+//  2. 覆盖成本次准备注入的代理变量（大小写两种都设），
+//     这样用户 rc 里的 `${HTTP_PROXY:-默认值}` 不会生效，
+//     预检读到的就是我们真正会注入的值。
+//  3. 带上 Antigravity 的 LOGIN_SHELL_INJECTED_ENV 四个变量。
+//  4. ALL_PROXY：只在本次**会注入**它时才设；否则要**移除**，
+//     与 launcher.BuildEnv 的行为一致（http 通道下 ALL_PROXY 必须清掉）。
+//
+// ⚠️ 空值**不写**进去：Injection 的字段可能为空（例如 doctor
+// 只想看当前环境），此时必须保留继承来的值。写空值会把
+// 用户 rc 里的 `${HTTP_PROXY:-默认值}` 变成"有变量但为空"，
+// 于是默认值生效 —— 正好制造我们要避免的误报。
+func buildProbeEnv(inj Injection) []string {
+	env := os.Environ()
+
+	// Antigravity 自己注入的四个变量。
+	for k, v := range AntigravityInjectedEnv {
+		env = setEnv(env, k, v)
+	}
+
+	// 本次准备注入的代理变量。
+	setIfNotEmpty := func(env []string, key, value string) []string {
+		if value == "" {
+			return env
+		}
+		return setEnv(env, key, value)
+	}
+	env = setIfNotEmpty(env, "HTTP_PROXY", inj.HTTPProxy)
+	env = setIfNotEmpty(env, "http_proxy", inj.HTTPProxy)
+	env = setIfNotEmpty(env, "HTTPS_PROXY", inj.HTTPSProxy)
+	env = setIfNotEmpty(env, "https_proxy", inj.HTTPSProxy)
+	env = setIfNotEmpty(env, "NO_PROXY", inj.NoProxy)
+	env = setIfNotEmpty(env, "no_proxy", inj.NoProxy)
+
+	if inj.AllProxy != "" {
+		env = setEnv(env, "ALL_PROXY", inj.AllProxy)
+		env = setEnv(env, "all_proxy", inj.AllProxy)
+	} else {
+		// 本次不注入 ALL_PROXY → 与 launcher.BuildEnv 一致地清掉。
+		env = unsetEnv(env, "ALL_PROXY")
+		env = unsetEnv(env, "all_proxy")
+	}
+
+	return env
 }
 
 // classify 把登录 shell 的 env 输出归类成冲突。
@@ -264,6 +464,10 @@ func classify(envOut string, inj Injection) []Conflict {
 			continue
 		}
 
+		// ⚠️ 我们**没有**注入这个变量（w == ""），而登录 shell 有。
+		// 这不是"shell 覆盖了我们"——是我们压根没管这个变量，
+		// 真启动时它同样会生效。所以按"值不同"的常规档处理。
+		// 大写名的仍然致命：那正是真启动时会被读到的值。
 		sev := SeverityWarning
 		reason := "Antigravity 仍会用大写名（本启动注入的值），但只认小写的第三方工具会走这个代理"
 		if spec.primary {
@@ -292,13 +496,37 @@ func sameValue(a, b string) bool {
 	return strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
 }
 
-// Fatal 只返回致命的那些冲突。
-func Fatal(conflicts []Conflict) []Conflict {
-	var out []Conflict
-	for _, c := range conflicts {
-		if c.Severity == SeverityFatal {
-			out = append(out, c)
+// setEnv 替换已有键或追加新键。
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	out := env[:0:0]
+	replaced := false
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			if replaced {
+				continue // 去重
+			}
+			out = append(out, prefix+value)
+			replaced = true
+			continue
 		}
+		out = append(out, e)
+	}
+	if !replaced {
+		out = append(out, prefix+value)
+	}
+	return out
+}
+
+// unsetEnv 删除指定的环境变量。
+func unsetEnv(env []string, key string) []string {
+	prefix := key + "="
+	out := env[:0:0]
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			continue
+		}
+		out = append(out, e)
 	}
 	return out
 }
@@ -355,6 +583,26 @@ func Report(conflicts []Conflict, fatal bool) string {
 	b.WriteString("说明: 这不是本程序的 bug, 是 Antigravity 的既定行为\n")
 	b.WriteString("      (dist/loginShellEnv.js 读取登录 shell 环境,\n")
 	b.WriteString("       dist/languageServer.js 用它覆盖 process.env)。\n")
+	return b.String()
+}
+
+// ReportInconclusive 说明「没能确认」这件事。
+//
+// 措辞很重要：不是"没有冲突"，而是"没能读到登录 shell 的环境，
+// 无法确认"。Antigravity 自己最多等 10s，我们只等 5s，
+// 所以这个窗口是真实存在的。
+func ReportInconclusive(err error) string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString("========================================================\n")
+	b.WriteString(" 警告：没能读取登录 shell 的环境，无法确认有无冲突\n")
+	b.WriteString("========================================================\n\n")
+	if err != nil {
+		b.WriteString(fmt.Sprintf("原因: %v\n\n", err))
+	}
+	b.WriteString("Antigravity 自己最多等 10 秒读取登录 shell 环境，本次预检只等 5 秒。\n")
+	b.WriteString("如果你的 rc 文件很慢，可能出现「预检放弃、Antigravity 读到了并撞上冲突」的情况。\n")
+	b.WriteString("若启动后通道没生效，请手动检查 rc 文件里的代理 export。\n")
 	return b.String()
 }
 

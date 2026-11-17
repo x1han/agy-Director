@@ -363,7 +363,13 @@ func discoverChannels() ([]channel.Channel, error) {
 				Port:      p.Port,
 				Scheme:    probe.Best(),
 				Protocols: probe.Schemes(),
-				LAN:       probe.LAN,
+				// ⚠️ probe.LAN 是从**归一化后**的 host 算的
+				// （127.0.0.1 永远是回环），所以对监听表来源
+				// 永远是 false。真正的"局域网可见"信息在
+				// ListenPort.Wildcard 里 —— 监听地址是通配
+				// （0.0.0.0 / :: / ::ffff:0.0.0.0）时为 true。
+				// 两者取或：任一为真就算局域网监听。
+				LAN: probe.LAN || p.Wildcard,
 			}, "本机监听表")
 		}
 	}

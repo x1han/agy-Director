@@ -74,8 +74,14 @@ func BuildEnv(ch channel.Channel, extra map[string]string) []string {
 		env = unsetEnv(env, "all_proxy")
 	}
 
-	env = setEnv(env, "NO_PROXY", channel.JoinNoProxy(os.Getenv("NO_PROXY")))
-	env = setEnv(env, "no_proxy", channel.JoinNoProxy(os.Getenv("no_proxy")))
+	// NO_PROXY：读宿主机现有的值（大小写都读，见 channel.EffectiveNoProxy），
+	// 合并回环地址。**大小写两种都设成同一个合并后的值**——
+	// Unix 上 NO_PROXY 与 no_proxy 是两个独立条目，而 Antigravity 的
+	// 登录 shell 环境会逐键覆盖我们注入的值，两个都设才能保证
+	// 用户的 bypass 列表不会在任一大小写下丢失。
+	noProxy := channel.EffectiveNoProxy()
+	env = setEnv(env, "NO_PROXY", noProxy)
+	env = setEnv(env, "no_proxy", noProxy)
 
 	for k, v := range extra {
 		env = setEnv(env, k, v)

@@ -130,21 +130,29 @@ func runLaunch(args []string) error {
 	//      · 大写名不同   → 致命（通道会直接失效），红字报错拦住
 	//
 	//    我们绝不触碰用户的 .bashrc/.zshrc/.profile。
+	//
+	//    注入基准用 EffectiveNoProxy()（读宿主机的大小写两种 NO_PROXY
+	//    再合并回环项）——这与 launcher.BuildEnv 真正注入的值一致。
 	inj := shellenv.Injection{
 		HTTPProxy:  ch.URL(),
 		HTTPSProxy: ch.URL(),
-		NoProxy:    channel.JoinNoProxy(os.Getenv("NO_PROXY")),
+		NoProxy:    channel.EffectiveNoProxy(),
 	}
 	if ch.Scheme == channel.SchemeSOCKS5 {
 		inj.AllProxy = ch.URL()
 	}
-	conflicts := shellenv.Detect(5*time.Second, inj)
-	if fatal := shellenv.Fatal(conflicts); len(fatal) > 0 {
+	result := shellenv.Detect(5*time.Second, inj)
+	if fatal := result.Fatal(); len(fatal) > 0 {
 		fmt.Fprint(os.Stderr, shellenv.Report(fatal, true))
 		return fmt.Errorf("登录 shell 里存在会覆盖代理的变量，已中止启动")
-	} else if len(conflicts) > 0 {
+	} else if len(result.Conflicts) > 0 {
 		// 只是警告：不影响 Antigravity 自己的流量，但要说清楚。
-		fmt.Fprint(os.Stderr, shellenv.Report(conflicts, false))
+		fmt.Fprint(os.Stderr, shellenv.Report(result.Conflicts, false))
+	}
+	if result.Inconclusive {
+		// 没能读到登录 shell 的环境 ≠ 没有冲突。
+		// Antigravity 自己最多等 10s，我们只等 5s，存在窗口。
+		fmt.Fprint(os.Stderr, shellenv.ReportInconclusive(result.Err))
 	}
 
 	// 5) 启动
@@ -216,7 +224,9 @@ func runLaunch(args []string) error {
 //
 // 带端口的条目（127.0.0.1:8080）两边都支持，直接用。
 func chromiumBypassList(ch channel.Channel) string {
-	noProxy := channel.JoinNoProxy(os.Getenv("NO_PROXY"))
+	// 用 EffectiveNoProxy()：读宿主机的大小写两种 NO_PROXY 再合并回环项，
+	// 与 launcher.BuildEnv 真正注入给后端的值保持一致。
+	noProxy := channel.EffectiveNoProxy()
 
 	var out []string
 	seen := map[string]bool{}
