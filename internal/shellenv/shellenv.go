@@ -270,6 +270,21 @@ func Detect(timeout time.Duration, inj Injection) Result {
 	// ⚠️ 关键：把注入值带进探测用的 shell，让预检与真启动一致。
 	cmd.Env = buildProbeEnv(inj)
 
+	// ⚠️ WaitDelay：ctx 被取消后，如果子进程赖着不走，
+	// 最多再给它 500ms 就强制收场，不让预检无限期挂住。
+	//
+	// ⚠️ 但要知道它**管不到什么**：Go 的 os/exec 里，
+	// `closeDescriptors(c.parentIOPipes)`（用来打断卡住的管道读）
+	// 被关在 `if c.goroutineErr != nil` 分支里。而我们用的是
+	// `cmd.StdoutPipe()` —— 它把 c.Stdout 设成 *os.File，
+	// **不创建拷贝 goroutine**，所以 goroutineErr 恒为 nil，
+	// 那条分支永远走不到。
+	//
+	// 也就是说：**WaitDelay 不会替我们关掉读端**。
+	// 真正打断阻塞读的是 readFramedEnv 自己的超时逻辑
+	// （它会 Close 掉读端）。两件事各管各的，缺一不可。
+	cmd.WaitDelay = 500 * time.Millisecond
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return Result{Inconclusive: true, Err: err}
@@ -278,8 +293,20 @@ func Detect(timeout time.Duration, inj Injection) Result {
 		return Result{Inconclusive: true, Err: err}
 	}
 
+	// ⚠️ readFramedEnv 自己是**有界**的：超时后它会关掉读端，
+	// 把卡在 Read 里的 goroutine 打断。（不能指望 ctx：
+	// ctx 只能杀掉直接子进程，杀不掉持有管道写端的后台孙进程。）
 	frame, err := readFramedEnv(stdout, timeout)
+
+	// ⚠️ 主动 cancel：拿到帧（或者超时）之后立刻给探测 shell
+	// 发终止信号，别让它继续跑 rc 的后半段。
+	// 配合 WaitDelay，赖着不走的进程最多再拖 500ms。
+	cancel()
+
 	// 无论成败都要收尸，否则会留下僵尸进程。
+	//
+	// 这一步**不会**卡住：StdoutPipe 场景下没有拷贝 goroutine，
+	// Cmd.Wait 只 waitpid(shell) 一个进程，然后关掉读端。
 	_ = cmd.Wait()
 	if err != nil {
 		// 查不到**不等于**没有冲突：只能报告"无法确认"。
@@ -317,15 +344,67 @@ func probeCommand() string {
 //   - 读到帧就返回，**不等 EOF**。
 //
 // 返回的字符串是帧内的原始文本（交给 classify 解析）。
+//
+// ⚠️ **timeout 是硬上界**，不是"两次读之间顺手看一眼"。
+//
+// 早期版本在循环顶部检查 deadline，然后调 r.Read() —— 但 Read 是
+// **阻塞**的：一旦卡在里面，顶部那个检查永远走不到。
+// 于是"超时"实际上只由 ctx（杀直接子进程）兜底，而用户 rc 文件
+// 起的后台任务（持有管道写端）根本不是 ctx 能杀的，
+// 读端就会一直挂着 —— 启动器被卡住。
+//
+// 现在改成：读在独立 goroutine 里做，主流程用定时器守着；
+// 超时后主动**打断**那个阻塞的读。
 func readFramedEnv(r io.Reader, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	type outcome struct {
+		frame string
+		err   error
+	}
+	done := make(chan outcome, 1)
+
+	go func() {
+		frame, err := readFramedEnvBlocking(r)
+		done <- outcome{frame: frame, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case o := <-done:
+		return o.frame, o.err
+	case <-timer.C:
+		// 超时：打断可能正卡在 Read 里的那个 goroutine。
+		interruptRead(r)
+		// 打断后它一般会立刻返回；给它一点收尾时间，
+		// 免得 goroutine 立刻泄漏，但也不能无限等。
+		select {
+		case <-done:
+		case <-time.After(readInterruptGrace):
+		}
+		return "", fmt.Errorf("读取登录 shell 环境超时（%v）", timeout)
+	}
+}
+
+// readInterruptGrace 是打断阻塞读之后，等读 goroutine 收尾的宽限时间。
+//
+// 打断是瞬时的（deadline / close），正常情况下 goroutine 立刻就
+// 返回了。这个宽限只是防止极端情况下 Detect 自己又卡住。
+const readInterruptGrace = 200 * time.Millisecond
+
+// readFramedEnvBlocking 是"读到帧为止"的阻塞读循环。
+//
+// 单独拆出来是因为它**允许**阻塞：上层的 readFramedEnv 负责
+// 保证上界（定时器 + 打断）。
+func readFramedEnvBlocking(r io.Reader) (string, error) {
 	var buf bytes.Buffer
 	chunk := make([]byte, 8192)
-	deadline := time.Now().Add(timeout)
 
 	for {
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf("读取登录 shell 环境超时（%v）", timeout)
-		}
 		n, err := r.Read(chunk)
 		if n > 0 {
 			buf.Write(chunk[:n])
@@ -334,11 +413,39 @@ func readFramedEnv(r io.Reader, timeout time.Duration) (string, error) {
 			}
 		}
 		if err != nil {
+			// 读完了还没凑出完整帧：把已读到的内容再试一次
+			// （EOF 那一刻可能正好带着收尾分隔符）。
 			if frame, ok := extractFrame(buf.String()); ok {
 				return frame, nil
 			}
 			return "", err
 		}
+	}
+}
+
+// interruptRead 打断一个可能正阻塞在 Read 上的 reader。
+//
+// 优先用 SetReadDeadline：这是**唯一**能真正唤醒"阻塞中"的 read
+// 的办法。Unix 上 close(fd) 不会唤醒另一个线程里阻塞的 read
+// （内核要等 read 返回才释放文件描述）—— 这是经典陷阱，
+// 只 close 的话读 goroutine 会一直挂着。
+//
+// ⚠️ SetReadDeadline 可能**失败**（返回 ErrNoDeadline）：
+// Windows 上 os.Pipe 的句柄没注册进 runtime poller，
+// 不支持 deadline。这时必须**继续**退回 Close，
+// 不能因为 deadline 失败就什么都不做 —— 那就等于没打断。
+//
+// 兜底的 Close 不保证能唤醒阻塞的读（Unix 上尤其如此），
+// 但至少释放了 fd；调用方已经返回，不会卡住启动。
+func interruptRead(r io.Reader) {
+	if d, ok := r.(interface{ SetReadDeadline(time.Time) error }); ok {
+		if err := d.SetReadDeadline(time.Now()); err == nil {
+			return
+		}
+		// deadline 不支持 → 落到下面的 Close。
+	}
+	if c, ok := r.(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 

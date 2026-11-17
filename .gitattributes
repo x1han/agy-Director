@@ -1,0 +1,19 @@
+# 统一按 LF 存库。
+#
+# 为什么需要：Windows 上编辑 / git stash pop 会把 CRLF 写回工作区，
+# 导致 gofmt 把整个文件报成"需要格式化"（整文件 diff，噪音极大），
+# 也会让 diff 失真。
+#
+# 约定：仓库里一律 LF；Windows 端用 core.autocrlf=true 自动转换，
+# 不入库。
+* text=auto eol=lf
+
+# 二进制，不做换行转换
+*.exe binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.svg binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
