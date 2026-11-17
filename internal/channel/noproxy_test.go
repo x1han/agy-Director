@@ -15,18 +15,22 @@ func hasEntry(list, entry string) bool {
 	return false
 }
 
-// TestMergeNoProxy 验证大写与小写 NO_PROXY 的合并规则。
+// TestSelectNoProxy 验证 NO_PROXY 的取值规则。
 //
-// ⚠️ 测的是 MergeNoProxy（纯函数）而不是 EffectiveNoProxy
+// 语义必须与 Go 的 x/net/http/httpproxy **完全一致**：
+//
+//	NoProxy: getEnvAny("NO_PROXY", "no_proxy")
+//
+// 取第一个非空的，**绝不拼接**。
+//
+// ⚠️ 拼接是错的：NO_PROXY 是**绕过代理的白名单**，
+// 往里加条目 = 让原本走代理的流量变成直连。
+//
+// ⚠️ 测的是 SelectNoProxy（纯函数）而不是 EffectiveNoProxy
 // （读环境变量）：Windows 上 os.Getenv 大小写不敏感，
 // NO_PROXY 与 no_proxy 是**同一个**环境条目，
 // 在这台机器上根本构造不出"两个都设"的场景。
-//
-// 真实的 Unix 上它们是两个独立条目：用户的 .bashrc 里常写小写
-// `export no_proxy=...`，系统级 /etc/environment 里可能写大写。
-// 只读大写会把用户的 bypass 列表整段丢掉 —— 那等于让用户的
-// 内网服务全部被代理。
-func TestMergeNoProxy(t *testing.T) {
+func TestSelectNoProxy(t *testing.T) {
 	tests := []struct {
 		name  string
 		upper string
@@ -49,25 +53,29 @@ func TestMergeNoProxy(t *testing.T) {
 			want: "api.example.com",
 		},
 		{
-			// 两个都设时都并进来（大写在前）。
-			// 大写决定 Antigravity 的实际行为（httpproxy 大写优先），
-			// 但把小写也带上不会让本该走代理的流量变成绕过代理。
-			name:  "两个都设",
+			// 两个都设时**只取大写**，绝不拼接。
+			name:  "两个都设 → 只取大写",
 			upper: "api.example.com", lower: "internal.example.com",
-			want: "api.example.com,internal.example.com",
+			want: "api.example.com",
 		},
 		{
 			name:  "两个都设且内容相同",
 			upper: "api.example.com", lower: "api.example.com",
 			want: "api.example.com",
 		},
+		{
+			// 大写是空字符串时（不是"未设置"）也要落到小写。
+			name:  "大写为空串 → 取小写",
+			upper: "", lower: "internal.example.com",
+			want: "internal.example.com",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := MergeNoProxy(tt.upper, tt.lower)
+			got := SelectNoProxy(tt.upper, tt.lower)
 			if got != tt.want {
-				t.Errorf("MergeNoProxy(%q, %q) = %q, want %q", tt.upper, tt.lower, got, tt.want)
+				t.Errorf("SelectNoProxy(%q, %q) = %q, want %q", tt.upper, tt.lower, got, tt.want)
 			}
 		})
 	}

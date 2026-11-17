@@ -13,11 +13,13 @@ import (
 const usage = `agy-untun — 让 Antigravity 走本地代理通道（无需 TUN）
 
 用法:
+  agy-untun [选项]             等价于 agy-untun launch（双击即用的默认动作）
   agy-untun launch [选项]     探测通道并启动 Antigravity
   agy-untun channels [子命令]  管理代理通道
   agy-untun doctor             诊断安装、通道与运行环境
   agy-untun wrap <命令>...     在代理环境变量下运行任意命令
   agy-untun version            显示版本
+  agy-untun help               显示本帮助
 
 launch 选项:
   --ide            强制启动桌面版 Antigravity
@@ -40,27 +42,24 @@ doctor 选项:
 `
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Print(usage)
-		os.Exit(2)
-	}
+	args := normalizeArgs(os.Args[1:])
 
 	var err error
-	switch os.Args[1] {
+	switch args[0] {
 	case "launch":
-		err = runLaunch(os.Args[2:])
+		err = runLaunch(args[1:])
 	case "channels":
-		err = runChannels(os.Args[2:])
+		err = runChannels(args[1:])
 	case "doctor":
-		err = runDoctor(os.Args[2:])
+		err = runDoctor(args[1:])
 	case "wrap":
-		err = runWrap(os.Args[2:])
+		err = runWrap(args[1:])
 	case "version":
 		fmt.Println("agy-untun " + version)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
-		fmt.Fprintf(os.Stderr, "未知命令: %s\n\n%s", os.Args[1], usage)
+		fmt.Fprintf(os.Stderr, "未知命令: %s\n\n%s", args[0], usage)
 		os.Exit(2)
 	}
 
@@ -68,6 +67,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\n错误: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// normalizeArgs 规范化命令行参数。
+//
+// **无参数时默认执行 launch。**
+//
+// 这样双击 agy-untun.exe（或从桌面快捷方式启动）就是
+// "一键启动 Antigravity"，而不是打印一段帮助然后闪退。
+// 想要帮助信息用 help / -h / --help。
+func normalizeArgs(args []string) []string {
+	if len(args) == 0 {
+		return []string{"launch"}
+	}
+	return args
 }
 
 // version 由构建时 -ldflags 注入。

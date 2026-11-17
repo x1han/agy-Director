@@ -143,11 +143,19 @@ func JoinNoProxy(existing string) string {
 // EffectiveNoProxy 读取宿主机现有的 NO_PROXY，兼容大小写两种写法，
 // 再合并回环地址。
 //
-// 读取规则：
+// 读取规则与 Go 的 x/net/http/httpproxy **完全一致**：
 //
-//   - 只设了小写 → 用小写的值。
-//   - 只设了大写 → 用大写的值。
-//   - **两个都设了** → 两个都并进来（大写在前）。
+//	NoProxy: getEnvAny("NO_PROXY", "no_proxy")
+//
+//	getEnvAny 取**第一个非空**的值：NO_PROXY 非空就取它，
+//	否则才看 no_proxy。**绝不把两者拼在一起。**
+//
+// ⚠️ 为什么不能拼接：NO_PROXY 是**绕过代理的白名单**。
+// 往里加条目 = 让原本走代理的流量变成**直连**。
+// 早期版本把大写和小写合并，曾被指出"只增不减不会让流量绕过代理"
+// —— 这是**说反了**：加条目恰恰就是增加绕过。
+// 而且拼接出来的值与 Go 标准库的实际语义不符，
+// 会让我们的注入值和后端真正读到的值产生偏差。
 //
 // 为什么不能只看大写：用户的 rc 文件里常写的是小写
 // `export no_proxy=...`。Windows 上 os.Getenv 大小写不敏感，
@@ -155,52 +163,39 @@ func JoinNoProxy(existing string) string {
 // 只读大写会把用户的 bypass 列表整段丢掉——那等于让用户的
 // 内网服务全部被代理。
 //
-// ⚠️ 关于"两个都设了"：Go 的 httpproxy 只读大写
-// （getEnvAny("NO_PROXY", "no_proxy")），所以**大写决定**实际行为。
-// 这里仍把小写并进来，理由是：我们注入的 NO_PROXY 会被
-// Antigravity 的登录 shell 环境逐键覆盖，值更大意味着
-// 用户的 bypass 意图被完整保留——而不是因为小写会影响 Antigravity。
-// 合并只增不减，不会让本该走代理的流量变成绕过代理。
-//
 // 返回值已经过 JoinNoProxy，含 localhost,127.0.0.1,::1。
 func EffectiveNoProxy() string {
-	return JoinNoProxy(MergeNoProxy(os.Getenv("NO_PROXY"), os.Getenv("no_proxy")))
+	return JoinNoProxy(SelectNoProxy(os.Getenv("NO_PROXY"), os.Getenv("no_proxy")))
 }
 
-// MergeNoProxy 合并大写与小写的 NO_PROXY 值。
+// SelectNoProxy 按 Go 的 getEnvAny 语义选出 NO_PROXY 的值。
 //
-// 规则：
+//   - 大写非空 → 大写
+//   - 大写为空、小写非空 → 小写
+//   - 都为空 → 空
 //
-//   - 只设了小写 → 返回小写的值。
-//   - 只设了大写 → 返回大写的值。
-//   - **两个都设了** → 两个都并进来（大写在前）。
+// **绝不拼接两个值**（理由见 EffectiveNoProxy 的注释）。
 //
 // 抽成纯函数是为了能测：Windows 上 os.Getenv 大小写不敏感，
 // NO_PROXY 与 no_proxy 是**同一个**环境条目，
 // 无法在 Windows 上构造"两个都设"的场景。
-//
-// ⚠️ 合并只增不减，所以本该走代理的流量不会因此变成绕过代理。
-func MergeNoProxy(upper, lower string) string {
-	switch {
-	case upper == "":
-		return lower
-	case lower == "" || lower == upper:
+func SelectNoProxy(upper, lower string) string {
+	if upper != "" {
 		return upper
-	default:
-		return upper + "," + lower
 	}
+	return lower
 }
 
 // HostNoProxy 返回宿主机现有的 NO_PROXY 原始值（不合并回环项），
 // 兼容大小写两种写法，大写优先。
 //
+// 语义与 SelectNoProxy 一致（Go 的 getEnvAny）：
+// 大写非空取大写，否则取小写，**不拼接**。
+//
 // 用于"和宿主机现状比对"的场景（比如 doctor）：
 // 这种比对要拿**原始值**当基准，合并过回环项会产生假冲突。
 func HostNoProxy() string {
-	if v := os.Getenv("NO_PROXY"); v != "" {
-		return v
-	}
-	return os.Getenv("no_proxy")
+	return SelectNoProxy(os.Getenv("NO_PROXY"), os.Getenv("no_proxy"))
 }
 
 // DefaultTimeout 是探测各阶段的默认超时。
