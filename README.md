@@ -27,6 +27,25 @@ GOOS=windows GOARCH=amd64 go build -o dist/agy-untun.exe           ./cmd/agy-unt
 GOOS=windows GOARCH=arm64 go build -o dist/agy-untun-arm64.exe     ./cmd/agy-untun
 ```
 
+## 图标
+
+图标资产统一放在 `assets/`：
+
+| 文件 | 说明 |
+|---|---|
+| `assets/antigravity-one-color.svg` | Antigravity 单色标志（`#202124`），来源：Google 官方 |
+| `assets/antigravity-tile.svg` | 上者 + 白底圆角矩形（启动器实际使用） |
+| `assets/agy-old-man.svg` | 早期 Antigravity 品牌（机器人脸），备用 |
+| `assets/agy-untun.ico` | 由 `antigravity-tile.svg` 生成的多尺寸 Windows ICO |
+
+重新生成 ICO：
+
+```bash
+python tools/icon/build.py assets/antigravity-tile.svg assets/agy-untun.ico
+```
+
+构建脚本只用标准库 + 无头 Chrome，无需额外 Python 依赖。
+
 ## 许可
 
 待定。

@@ -298,6 +298,12 @@ D:\agy-untun\
 │       ├── launcher.go     BuildEnv / Launch / CheckRunning
 │       ├── launcher_windows.go / launcher_unix.go   平台 detach + CDP 探测
 │       └── version.go      User-Agent 版本提取
+├── assets/                 图标资产
+│   ├── antigravity-one-color.svg   单色标志（#202124）
+│   ├── antigravity-tile.svg        + 白底圆角矩形（实际使用）
+│   ├── agy-old-man.svg             早期品牌（机器人脸）
+│   └── agy-untun.ico               产物：多尺寸 32bpp ICO
+├── tools/icon/build.py     SVG → ICO 构建脚本（标准库 + 无头 Chrome）
 ├── docs/                   本报告
 └── .tools/go/              本地 Go 工具链（已 gitignore）
 ```
