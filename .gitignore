@@ -19,3 +19,7 @@ Thumbs.db
 # 本地构建产物
 /agy-untun.exe
 /dist/
+
+# Python
+__pycache__/
+*.pyc
