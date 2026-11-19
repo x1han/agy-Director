@@ -98,9 +98,6 @@ jobs:
           cp LICENSE README.md "$pkg/"
           tar -czf "$base.tar.gz" -C "$(dirname "$pkg")" "$(basename "$pkg")"
           rm -rf "$pkg"
-          # 删掉裸二进制 —— tar.gz 里已经有了，
-          # 留着会被上传步骤的通配符捞进 Release。
-          rm -f "$base"
 
       - name: 打包（Windows）
         if: matrix.os == 'windows'
@@ -122,8 +119,6 @@ jobs:
           fi
           (cd "$pkg" && zip -qry "../$base.zip" .)
           rm -rf "$pkg"
-          # 删掉裸 exe —— zip 里已经有了。
-          rm -f "$base.exe"
 
       - name: 上传产物（Linux）
         if: matrix.os == 'linux'
