@@ -1,4 +1,4 @@
-## agy-Director v1.1.0
+## agy-Director v1.2.0
 
 让 Antigravity 不开 TUN 也能出网 —— 现在是**带图标的终端界面**。
 
@@ -62,3 +62,6 @@ agy-Director channels   # 管理通道
 - 日志同时写 stderr 和文件（TUI 期间静音 stderr，避免和界面抢屏）
 - macOS 出 `.app` bundle（带图标，ad-hoc 签名）
 - Windows exe 带图标
+- 产物命名对齐 opencode：`windows/macos/linux` × `x64/arm64`，
+  x64 同时覆盖 Intel 和 AMD
+- 图标放大到 90%，白底黑标在小尺寸下更清楚
