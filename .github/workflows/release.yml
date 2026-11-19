@@ -98,6 +98,9 @@ jobs:
           cp LICENSE README.md "$pkg/"
           tar -czf "$base.tar.gz" -C "$(dirname "$pkg")" "$(basename "$pkg")"
           rm -rf "$pkg"
+          # 删掉裸二进制 —— tar.gz 里已经有了，
+          # 留着会被上传步骤的通配符捞进 Release。
+          rm -f "$base"
 
       - name: 打包（Windows）
         if: matrix.os == 'windows'
@@ -119,12 +122,28 @@ jobs:
           fi
           (cd "$pkg" && zip -qry "../$base.zip" .)
           rm -rf "$pkg"
+          # 删掉裸 exe —— zip 里已经有了。
+          rm -f "$base.exe"
 
-      - name: 上传产物
+      - name: 上传产物（Linux）
+        if: matrix.os == 'linux'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}
-          path: ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}*
+          # ⚠️ 不能用 "$base*" 通配 ——
+          # 那会把构建步骤留下的**裸二进制**（没有扩展名那个）
+          # 一起捞进来，Release 里就多出一堆没用的重复文件。
+          path: ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+      - name: 上传产物（Windows）
+        if: matrix.os == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}.exe
+            ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}.zip
           if-no-files-found: error
 
   macos:
