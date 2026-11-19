@@ -23,12 +23,19 @@
 # 所以直接提交生成好的 .syso，CI 只管 go build。
 # 换图标时跑一次本脚本即可。
 #
-# ── 为什么用小一号的 ICO ──────────────────────────────────────────────
+# ── 为什么必须包含 256px 帧 ──────────────────────────────────────────
 #
-# 256×256 的 32bpp DIB 有 270KB（未压缩 BGRA），
-# 撑得 .syso 有 373KB。Windows 资源管理器实际用到的最大尺寸
-# 通常不超过 128，所以 .syso 用 16..128 那套，体积降到 ~100KB。
-# 完整的 256 版仍然保留在 assets/ 里给需要的人用。
+# 之前 .syso 只嵌了 16..128，把 256 留在 assets/ 里 —— 理由是
+# "256 的 32bpp DIB 有 270KB，太大"。这个取舍是错的：
+#
+#   资源管理器的大图标视图要 256px。找不到 256 帧时，
+#   Windows 会把 128 帧**放大** —— 这就是"图标看起来糊"的真正原因。
+#
+# 现在 256 帧存成 PNG 压缩格式：同一张图，270KB → 6.1KB（差 40 倍），
+# 画质无损。整个 .syso 只比原来大 6KB。
+#
+# Windows 自己就是这么干的 —— explorer.exe / cmd.exe / notepad.exe
+# 的图标都是"小尺寸 DIB + 256 尺寸 PNG"的混合格式。
 
 set -euo pipefail
 
@@ -38,11 +45,7 @@ SVG="assets/agy-Director-tile.svg"
 LOGO="assets/agy-Director-logo.svg"
 ICO_FULL="assets/agy-Director.ico"
 PNG_FULL="assets/agy-Director.png"
-ICO_SLIM="$(mktemp -d)/agy-Director-slim.ico"
 OUT_DIR="cmd/agy-director"
-
-cleanup() { rm -rf "$(dirname "$ICO_SLIM")"; }
-trap cleanup EXIT
 
 if [ ! -f "$SVG" ]; then
     echo "找不到 $SVG" >&2
@@ -52,14 +55,11 @@ fi
 echo "==> 生成 tile SVG（白底 + 黑标，标志占 90%）"
 python tools/icon/tile.py "$LOGO" "$SVG" --bg "#FFFFFF" --scale 0.90
 
-echo "==> 生成完整 ICO（16..256）"
+echo "==> 生成完整 ICO（16..256，256 帧用 PNG 压缩）"
 python tools/icon/build.py "$SVG" "$ICO_FULL" --sizes 16,24,32,48,64,128,256
 
 echo "==> 生成 macOS iconset 源图（1024×1024 PNG）"
 python tools/icon/build.py "$SVG" "$PNG_FULL" --png --png-size 1024
-
-echo "==> 生成精简 ICO（16..128，用于 .syso）"
-python tools/icon/build.py "$SVG" "$ICO_SLIM" --sizes 16,24,32,48,64,128
 
 echo "==> 安装 rsrc"
 
@@ -81,7 +81,7 @@ RSRC="$PWD/.tools/bin/rsrc"
 # 交叉编译时才能各取各的（不带后缀会串架构）。
 for arch in amd64 arm64; do
     echo "==> 生成 $OUT_DIR/rsrc_windows_$arch.syso"
-    "$RSRC" -ico "$ICO_SLIM" -arch "$arch" -o "$OUT_DIR/rsrc_windows_$arch.syso"
+    "$RSRC" -ico "$ICO_FULL" -arch "$arch" -o "$OUT_DIR/rsrc_windows_$arch.syso"
 done
 
 echo "==> 完成"

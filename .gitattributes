@@ -17,3 +17,5 @@
 *.woff binary
 *.woff2 binary
 *.ttf binary
+# .syso 是链接期注入的 PE 资源（Windows exe 图标），纯二进制
+*.syso binary
