@@ -7,13 +7,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/x1han/agy-untun/internal/channel"
-	"github.com/x1han/agy-untun/internal/discovery"
-	"github.com/x1han/agy-untun/internal/launcher"
-	"github.com/x1han/agy-untun/internal/shellenv"
+	"github.com/x1han/agy-Director/internal/channel"
+	"github.com/x1han/agy-Director/internal/config"
+	"github.com/x1han/agy-Director/internal/discovery"
+	"github.com/x1han/agy-Director/internal/launcher"
+	"github.com/x1han/agy-Director/internal/scan"
+	"github.com/x1han/agy-Director/internal/shellenv"
 )
 
 // 启动桌面版时追加的 CDP 调试参数。
@@ -101,7 +102,14 @@ func runLaunch(args []string) error {
 		return fmt.Errorf("找不到 Antigravity 桌面版，也找不到 agy CLI")
 	}
 
-	// 3) 桌面版单实例守卫
+	return launchSelected(target, ch, opts)
+}
+
+// launchSelected 用选定的目标与通道启动 Antigravity。
+//
+// CLI 的 launch 与 TUI 都走这里，保证两条路的行为完全一致。
+func launchSelected(target *discovery.Target, ch *channel.Channel, opts *launchOptions) error {
+	// 1) 桌面版单实例守卫
 	//    Electron 有 requestSingleInstanceLock()，第二次启动会
 	//    把 argv 转发给已有实例并立刻退出（丢掉新 env）。
 	//    所以已有实例在跑时必须中止，否则用户以为走了代理，
@@ -123,7 +131,7 @@ func runLaunch(args []string) error {
 		}
 	}
 
-	// 4) Unix 上检查登录 shell 里的代理变量冲突。
+	// 2) Unix 上检查登录 shell 里的代理变量冲突。
 	//
 	//    Antigravity 会用登录 shell 的环境覆盖我们注入的代理变量
 	//    （dist/languageServer.js: `const env = { ...process.env, ...loginShellEnv }`），
@@ -165,7 +173,7 @@ func runLaunch(args []string) error {
 		fmt.Fprint(os.Stderr, shellenv.ReportInconclusive(result.Err))
 	}
 
-	// 5) 启动
+	// 3) 启动
 	fmt.Printf("\n启动 %s\n", target.Path)
 	fmt.Printf("通道  %s\n", ch.String())
 	fmt.Printf("代理  %s\n", ch.URL())
@@ -378,41 +386,17 @@ func hasSwitchPrefix(args []string, name string) bool {
 
 // verifyAll 并发验证所有候选通道，返回可用的那些。
 //
-// 并发而不是串行：每个候选要真实请求 2 个 Google 端点，
-// 单个候选最长 16s；本机监听表里通常有几十个端口，
-// 串行会让"扫描"变成几分钟的等待。
-// 并发后总耗时 ≈ 最慢的单个候选。
+// 验证逻辑在 internal/scan 里（CLI 与 TUI 共用），
+// 这里额外把每个候选的结果打印到 stdout。
 func verifyAll(candidates []channel.Channel, timeout time.Duration) ([]channel.Channel, error) {
-	type result struct {
-		ch     channel.Channel
-		ok     bool
-		detail string
-	}
-
-	results := make([]result, len(candidates))
-	var wg sync.WaitGroup
-	// 并发上限：太多同时连接反而会挤爆本机 socket 资源。
-	sem := make(chan struct{}, 8)
-
-	for i, c := range candidates {
-		wg.Add(1)
-		go func(i int, c channel.Channel) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			ok, detail := channel.VerifyChannel(c, timeout)
-			results[i] = result{ch: c, ok: ok, detail: detail}
-		}(i, c)
-	}
-	wg.Wait()
-
+	results := scan.Verify(candidates, timeout)
 	var usable []channel.Channel
 	for _, r := range results {
-		if r.ok {
-			fmt.Printf("  ✓ %-32s %s\n", r.ch.Addr(), r.detail)
-			usable = append(usable, r.ch)
+		if r.OK {
+			fmt.Printf("  ✓ %-32s %s\n", r.Channel.Addr(), r.Detail)
+			usable = append(usable, r.Channel)
 		} else {
-			fmt.Printf("  ✗ %-32s %s\n", r.ch.Addr(), r.detail)
+			fmt.Printf("  ✗ %-32s %s\n", r.Channel.Addr(), r.Detail)
 		}
 	}
 	return usable, nil
@@ -431,13 +415,13 @@ func selectChannel(opts *launchOptions) (*channel.Channel, error) {
 
 	// 配置里的通道。
 	if !opts.scan {
-		if ch, ok := findConfiguredChannel(opts.channel); ok {
+		if ch, ok := config.Find(opts.channel); ok {
 			return &ch, nil
 		}
 	}
 
 	// 扫描本机。
-	candidates, err := discoverChannels()
+	candidates, err := scan.Discover()
 	if err != nil {
 		return nil, err
 	}

@@ -681,7 +681,7 @@ func Report(conflicts []Conflict, fatal bool) string {
 		b.WriteString(fmt.Sprintf("        %s\n", c.Reason))
 	}
 
-	b.WriteString("\n请手动处理（agy-untun 不会替你改这些文件）:\n")
+	b.WriteString("\n请手动处理（agy-Director 不会替你改这些文件）:\n")
 	b.WriteString("  1. 编辑你的 shell 配置文件, 移除上面的 export, 例如:\n")
 	b.WriteString("       $EDITOR ~/.bashrc     # 或 ~/.zshrc / ~/.profile\n")
 	b.WriteString("  2. 或者注释掉它们, 例如:\n")

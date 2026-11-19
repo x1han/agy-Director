@@ -203,16 +203,27 @@ def read_png_rgba(path):
 
 
 def resize_rgba(src, sw, sh, dw, dh):
-    """双线性缩放 RGBA。"""
+    """双线性缩放 RGBA。
+
+    ⚠️ 采样坐标必须先夹到 [0, size-1] 再算插值权重。
+    放大时（sh < dh）边缘的采样坐标会是负数
+    （如 y=0 时 sy = 0.5*sh/dh - 0.5 < 0），
+    权重变成负数 → 外插 → 值越界 → bytearray 赋值报
+    "byte must be in range(0, 256)"。
+    之前只在缩小（512→256 及更小）时用过这条路径，
+    坐标恒为正，所以这个坑一直没暴露；放大时才炸。
+    """
     out = bytearray(dw * dh * 4)
     for y in range(dh):
         sy = (y + 0.5) * sh / dh - 0.5
-        y0 = max(0, int(sy))
+        sy = min(max(sy, 0.0), float(sh - 1))
+        y0 = int(sy)
         y1 = min(sh - 1, y0 + 1)
         fy = sy - y0
         for x in range(dw):
             sx = (x + 0.5) * sw / dw - 0.5
-            x0 = max(0, int(sx))
+            sx = min(max(sx, 0.0), float(sw - 1))
+            x0 = int(sx)
             x1 = min(sw - 1, x0 + 1)
             fx = sx - x0
 
@@ -225,7 +236,8 @@ def resize_rgba(src, sw, sh, dw, dh):
             for c in range(4):
                 a = src[i00 + c] * (1 - fx) + src[i01 + c] * fx
                 b = src[i10 + c] * (1 - fx) + src[i11 + c] * fx
-                out[d + c] = int(round(a * (1 - fy) + b * fy))
+                v = int(round(a * (1 - fy) + b * fy))
+                out[d + c] = 0 if v < 0 else (255 if v > 255 else v)
     return out
 
 
@@ -324,11 +336,46 @@ def build_ico(dibs, sizes):
     return bytes(ico)
 
 
+def build_png(rgba, size):
+    """把 RGBA 像素编码成 PNG 字节流。
+
+    PNG 格式（简化）：
+      - 8 字节签名
+      - IHDR：宽、高、位深 8、颜色类型 6（RGBA）、压缩/滤波/交错全 0
+      - IDAT：zlib 压缩的扫描线，每行前面加一个滤波字节
+      - IEND
+
+    滤波用 0（None）—— 体积大一点，但省事且绝对正确。
+    macOS 的 sips/iconutil 只认格式，不在乎压缩率。
+    """
+    import zlib
+
+    raw = bytearray()
+    stride = size * 4
+    for row in range(size):
+        raw.append(0)  # 滤波类型 0 = None
+        raw += rgba[row * stride:(row + 1) * stride]
+
+    def chunk(tag, data):
+        out = struct.pack(">I", len(data)) + tag + data
+        return out + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+            + chunk(b"IEND", b""))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("svg")
     ap.add_argument("out")
     ap.add_argument("--sizes", default="16,24,32,48,64,128,256")
+    ap.add_argument("--png", action="store_true",
+                    help="输出 PNG 而不是 ICO（macOS iconset 需要）")
+    ap.add_argument("--png-size", type=int, default=1024,
+                    help="--png 模式下的边长，默认 1024")
     args = ap.parse_args()
 
     chrome = find_chrome()
@@ -338,6 +385,16 @@ def main():
         sw, sh, rgba = read_png_rgba(png)
         print(f"渲染完成: {sw}x{sh}")
 
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+
+        if args.png:
+            scaled = resize_rgba(rgba, sw, sh, args.png_size, args.png_size)
+            data = build_png(scaled, args.png_size)
+            with open(args.out, "wb") as f:
+                f.write(data)
+            print(f"已写入 {args.out} ({len(data)} 字节, PNG {args.png_size}x{args.png_size})")
+            return
+
         sizes = [int(s) for s in args.sizes.split(",")]
         dibs = []
         for size in sizes:
@@ -345,7 +402,6 @@ def main():
             dibs.append(build_dib(scaled, size))
 
         ico = build_ico(dibs, sizes)
-        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         with open(args.out, "wb") as f:
             f.write(ico)
         print(f"已写入 {args.out} ({len(ico)} 字节, {len(sizes)} 个尺寸)")

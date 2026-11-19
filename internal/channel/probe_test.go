@@ -101,3 +101,22 @@ func TestProbeAgainstLiveProxy(t *testing.T) {
 		t.Fatal("Best() returned empty scheme despite a working protocol")
 	}
 }
+
+func TestChannelURLDefaultsToHTTP(t *testing.T) {
+	// 协议没定下来时，URL() 不能返回 "//host:port" 这种没有协议头的垃圾。
+	c := Channel{Host: "127.0.0.1", Port: 10808}
+	got := c.URL()
+	want := "http://127.0.0.1:10808"
+	if got != want {
+		t.Errorf("URL() = %q, want %q", got, want)
+	}
+}
+
+func TestChannelURLKeepsExplicitScheme(t *testing.T) {
+	c := Channel{Host: "127.0.0.1", Port: 10808, Scheme: SchemeSOCKS5}
+	got := c.URL()
+	want := "socks5://127.0.0.1:10808"
+	if got != want {
+		t.Errorf("URL() = %q, want %q", got, want)
+	}
+}

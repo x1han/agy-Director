@@ -24,6 +24,21 @@ const (
 	TargetCLI TargetKind = "cli"
 )
 
+// Label 返回目标类型的中文可读名。
+//
+// 与 String() 分开：String() 输出的是机器可读的 "ide"/"cli"，
+// 用于日志和 CLI 列表；Label 是给人看的。
+func (k TargetKind) Label() string {
+	switch k {
+	case TargetIDE:
+		return "桌面版"
+	case TargetCLI:
+		return "CLI"
+	default:
+		return string(k)
+	}
+}
+
 // Target 是一个找到的启动目标。
 type Target struct {
 	Kind TargetKind

@@ -1,10 +1,10 @@
-# agy-untun 架构评审报告
+# agy-Director 架构评审报告
 
 > 生成时间：2026-11-17 12:00 (Asia/Shanghai)
-> 项目路径：`D:\agy-untun`
+> 项目路径：`D:\agy-Director`
 > Git 仓库：已初始化，初始提交 `c104a09`，分支 `master`
 > 本报告用途：供专家团评审架构与技术选型，列出待决策问题与风险
-> 代码位置：全部源码在 `D:\agy-untun`（Go，2344 行含测试），本报告只嵌入**关键决策片段**与**实测证据**，不复制全部源码
+> 代码位置：全部源码在 `D:\agy-Director`（Go，2344 行含测试），本报告只嵌入**关键决策片段**与**实测证据**，不复制全部源码
 
 ---
 
@@ -234,7 +234,7 @@ pid=23988 -> 127.0.0.1:10808 Established
 | linux-x64 | `latest-x64-linux` | 200 | `Antigravity.AppImage` + `.deb` |
 | **linux-arm64** | `latest-arm64-linux` | **404** | **Linux arm64 未发布** |
 
-**推论**：agy-untun 自身支持 linux-arm64，但**其目标 Antigravity 桌面版在 linux-arm64 上不存在**。Linux arm64 用户只能用 agy CLI（该平台 agy 确有发布）。
+**推论**：agy-Director 自身支持 linux-arm64，但**其目标 Antigravity 桌面版在 linux-arm64 上不存在**。Linux arm64 用户只能用 agy CLI（该平台 agy 确有发布）。
 
 ### 3.4 Linux 上为什么优先 CLI
 
@@ -280,8 +280,8 @@ Go 的 `GOOS/GOARCH` 零配置零工具链，是唯一「一次命令出 6 个�
 ### 5.1 包结构
 
 ```
-D:\agy-untun\
-├── cmd/agy-untun/          CLI 入口与子命令
+D:\agy-Director\
+├── cmd/agy-Director/          CLI 入口与子命令
 │   ├── main.go             顶层路由
 │   ├── cmd_launch.go       launch：选通道 → 选目标 → 单实例守卫 → 启动
 │   ├── cmd_channels.go     channels：list/scan/add/remove/test
@@ -302,7 +302,7 @@ D:\agy-untun\
 │   ├── antigravity-one-color.svg   单色标志（#202124）
 │   ├── antigravity-tile.svg        + 白底圆角矩形（实际使用）
 │   ├── agy-old-man.svg             早期品牌（机器人脸）
-│   └── agy-untun.ico               产物：多尺寸 32bpp ICO
+│   └── agy-Director.ico               产物：多尺寸 32bpp ICO
 ├── tools/icon/build.py     SVG → ICO 构建脚本（标准库 + 无头 Chrome）
 ├── docs/                   本报告
 └── .tools/go/              本地 Go 工具链（已 gitignore）
@@ -311,7 +311,7 @@ D:\agy-untun\
 ### 5.2 核心数据流
 
 ```
-agy-untun launch
+agy-Director launch
    │
    ├─► selectChannel()
    │     ├─ --proxy <URL>          最高优先
@@ -420,7 +420,7 @@ var ProbeURLs = []string{
 ### 5.4 CLI 交互设计（全部走终端，无 GUI）
 
 ```
-$ agy-untun launch --yes
+$ agy-Director launch --yes
 
   ✓ 127.0.0.1:10808    127.0.0.1:10808 (http://127.0.0.1:10808) 可用
   ✓ 0.0.0.0:10810      0.0.0.0:10810 (http://0.0.0.0:10810) 可用
@@ -480,7 +480,7 @@ Shell 环境冲突（仅 macOS/Linux 有效）
 ### 6.2 端到端验证（决定性）
 
 ```
-$ agy-untun launch --yes
+$ agy-Director launch --yes
 已启动。
 
 # 等 22 秒后检查后端出站：
@@ -496,8 +496,8 @@ to-proxy(10808) = 8     direct(443) = 0
 |---|---|
 | macOS / Linux 上的实际运行 | 本机只有 Windows |
 | macOS / Linux 上的 shell env 冲突处理 | 同上（代码已写，逻辑已推演，未实机验证） |
-| agy CLI 经 agy-untun 启动的端到端 | 本机未安装 agy CLI（`~/.local/bin/agy` 与 `%LOCALAPPDATA%\agy\bin\agy.exe` 均无） |
-| `agy-untun wrap` 的实际使用 | 未实机运行 |
+| agy CLI 经 agy-Director 启动的端到端 | 本机未安装 agy CLI（`~/.local/bin/agy` 与 `%LOCALAPPDATA%\agy\bin\agy.exe` 均无） |
+| `agy-Director wrap` 的实际使用 | 未实机运行 |
 | 自动拉起代理客户端（`Channel.Launch`） | 字段已定义，实现未写 |
 
 ---
@@ -535,7 +535,7 @@ to-proxy(10808) = 8     direct(443) = 0
 **问题**：
 1. **TOCTOU**：检查通过后到实际 spawn 之间，旧实例可能退出（此时新实例能拿到锁，没问题）；但也可能旧实例正在退出、新实例刚起（此时新实例会被 Electron 转发 argv 并退出，**用户会看到"启动了但窗口没动"**）。当前无重试。
 2. **窗口间实例**：Electron 的 `requestSingleInstanceLock` 是**按 userData 目录**的。如果用户同时用不同 userData 启动，会有两个实例——检测不到。
-3. **Windows 上 terminate 不可靠**：`taskkill /IM Antigravity.exe` 杀的是所有同名进程，包括子进程；但如果 Antigravity 是以管理员权限运行的，普通权限的 agy-untun **杀不掉**（会弹 UAC）。当前实现会静默失败（taskkill 返回非 0 → 报错终止）。
+3. **Windows 上 terminate 不可靠**：`taskkill /IM Antigravity.exe` 杀的是所有同名进程，包括子进程；但如果 Antigravity 是以管理员权限运行的，普通权限的 agy-Director **杀不掉**（会弹 UAC）。当前实现会静默失败（taskkill 返回非 0 → 报错终止）。
 4. **未处理**：杀掉旧实例后 `DevToolsActivePort` 可能仍是旧端口，新实例启动后才会更新。当前 `time.Sleep(2s)` 是硬等待。
 
 **建议**：terminate 失败时明确提示「请手动关闭 Antigravity」并给出具体 PID，而不是只报错退出。
@@ -549,7 +549,7 @@ to-proxy(10808) = 8     direct(443) = 0
 2. 检测到冲突后**怎么修**？自动改用户的 `~/.bashrc` 是侵入性操作。
 3. 冲突时是否应该直接拒绝启动？
 
-**建议**：在 `launch` 里加检测，冲突时明确提示并给出三条选项（跳过 / 打印 rc 文件位置让用户自己改 / 提供一个 `agy-untun shell-fix` 子命令做精确的行级注释）。
+**建议**：在 `launch` 里加检测，冲突时明确提示并给出三条选项（跳过 / 打印 rc 文件位置让用户自己改 / 提供一个 `agy-Director shell-fix` 子命令做精确的行级注释）。
 
 ### 7.5 `NO_PROXY` 语义假设 ⚠️
 
@@ -557,8 +557,8 @@ to-proxy(10808) = 8     direct(443) = 0
 
 **问题**：
 1. Go 的 `httpproxy` 对 `NO_PROXY` 值的匹配规则是**域名后缀匹配**（`.x.com` 匹配 `a.x.com`），裸 `localhost` 精确匹配。追加是安全的。
-2. 但用户原有的 `NO_PROXY=api.example.com,.example.com,localhost,127.0.0.1` 来自注册表 `HKCU\Environment`——**这是全局设置**，agy-untun 只是继承，没改系统。
-3. **真正的问题**：`HTTP_PROXY`/`HTTPS_PROXY` 只在**子进程**里设置，不污染父 shell。但如果用户用 `agy-untun wrap` 包一个长驻进程，那个进程的子进程会继承——这是期望行为。
+2. 但用户原有的 `NO_PROXY=api.example.com,.example.com,localhost,127.0.0.1` 来自注册表 `HKCU\Environment`——**这是全局设置**，agy-Director 只是继承，没改系统。
+3. **真正的问题**：`HTTP_PROXY`/`HTTPS_PROXY` 只在**子进程**里设置，不污染父 shell。但如果用户用 `agy-Director wrap` 包一个长驻进程，那个进程的子进程会继承——这是期望行为。
 4. **`ALL_PROXY` 的语义分歧**：`ALL_PROXY` 在 curl 里是「所有协议都走这个代理」，在 Go 的 `httpproxy` 里**不被读取**。设它主要是给其他工具用。但 `ALL_PROXY` 设成 `socks5://` 时，某些工具（如 pip）不支持 socks5，会报错。**是否该只设 http/https？**
 
 **建议**：请专家评估 `ALL_PROXY` 的必要性，以及是否该为 socks5 通道额外提供一个 `http://` 的本地 HTTP 转发（很多工具不支持 socks5）。
@@ -611,7 +611,7 @@ to-proxy(10808) = 8     direct(443) = 0
 2. **scan/test 区分「协议匹配」与「完整验证」两级状态**，输出明确标注
 3. **实现 `Channel.Launch`**：通道端口未就绪时按配置拉起代理客户端并等待就绪
 4. **修 `terminateIDE` 的跨平台进程名**，失败时输出 PID 供手动处理
-5. **加结构化日志**（`~/.config/agy-untun/agy-untun.log`），便于用户反馈问题
+5. **加结构化日志**（`~/.config/agy-Director/agy-Director.log`），便于用户反馈问题
 6. **补 `internal/launcher` 的单元测试**（目前 0 个）
 
 ### 第 2 阶段：跨平台验证（需要 macOS/Linux 机器或 CI）
@@ -619,12 +619,12 @@ to-proxy(10808) = 8     direct(443) = 0
 7. **CI 矩阵**：GitHub Actions 跑 6 平台交叉编译 + 单元测试
 8. **在 macOS 上实测**：shell env 冲突、`Setsid` 行为、`.app` 路径探测、Gatekeeper quarantine
 9. **在 Linux 上实测**：AppImage 路径探测、agy CLI 优先逻辑、musl 发行版兼容
-10. **交叉验证 agy CLI 端到端**：装一个真实 agy，确认 `agy-untun launch --cli` 生效
+10. **交叉验证 agy CLI 端到端**：装一个真实 agy，确认 `agy-Director launch --cli` 生效
 
 ### 第 3 阶段：打磨
 
 11. 配置导入（从 PowerShell 版迁移）
-12. `agy-untun channels test` 输出更详细（各端点延迟对比）
+12. `agy-Director channels test` 输出更详细（各端点延迟对比）
 13. 考虑提供 `--proxy-server` 给 Electron 渲染进程，消除"UI 走系统代理 / 后端走通道"的混合行为
 14. 打包与分发：Homebrew cask、npm 包、Arch AUR、winget
 
@@ -639,8 +639,8 @@ to-proxy(10808) = 8     direct(443) = 0
 
 ```bash
 # 构建
-cd D:\agy-untun
-GOROOT="D:\agy-untun\.tools\go" .tools\go\bin\go.exe build -o agy-untun.exe ./cmd/agy-untun
+cd D:\agy-Director
+GOROOT="D:\agy-Director\.tools\go" .tools\go\bin\go.exe build -o agy-Director.exe ./cmd/agy-Director
 
 # 单元测试
 .tools\go\bin\go.exe test ./...
@@ -648,14 +648,14 @@ GOROOT="D:\agy-untun\.tools\go" .tools\go\bin\go.exe build -o agy-untun.exe ./cm
 # 交叉编译
 for t in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64" "windows amd64" "windows arm64"; do
   set -- $t; ext=""; [ "$1" = "windows" ] && ext=".exe"
-  GOOS=$1 GOARCH=$2 .tools\go\bin\go.exe build -o "dist/agy-untun-$1-$2$ext" ./cmd/agy-untun
+  GOOS=$1 GOARCH=$2 .tools\go\bin\go.exe build -o "dist/agy-Director-$1-$2$ext" ./cmd/agy-Director
 done
 
 # 端到端验证（关键）
 # 1) 杀掉所有实例
 powershell -Command "Get-Process Antigravity,language_server | Stop-Process -Force"
 # 2) 用启动器启动
-./agy-untun.exe launch --yes
+./agy-Director.exe launch --yes
 # 3) 20 秒后检查后端出站
 powershell -Command "
   \$ls = Get-Process language_server | Select-Object -First 1

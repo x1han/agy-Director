@@ -1,7 +1,7 @@
-# agy-untun — 专家评审意见整改说明
+# agy-Director — 专家评审意见整改说明
 
-**绝对路径**：`D:\agy-untun\docs\agy-untun-expert-response-20261117-1650.md`
-**对应提交**：`e307c4d`（`D:\agy-untun`）
+**绝对路径**：`D:\agy-Director\docs\agy-Director-expert-response-20261117-1650.md`
+**对应提交**：`e307c4d`（`D:\agy-Director`）
 **整改范围**：上一轮评审提出的 P0/P1 全部条目 + 你们点名要的三样东西。
 
 ---
@@ -532,7 +532,7 @@ func normalizeListenHost(host string) (string, bool) {
 
 **旧代码**（已删除）：`scanAllPorts()` 对 65535 个端口逐个拨号，10 秒内发起上万次 SYN —— 你们说会触发 Defender / 火绒 / CrowdStrike / Little Snitch 的进程隔离并打满 `ulimit -n`，这个判断我核对后**完全同意**。
 
-**新代码**（`cmd/agy-untun/cmd_channels.go` 的 `discoverChannels()`）：
+**新代码**（`cmd/agy-Director/cmd_channels.go` 的 `discoverChannels()`）：
 
 ```go
 // ── 来源 1：系统代理 ────────────────────────────────────────────
@@ -573,7 +573,7 @@ if len(out) == 0 {
 
 ```
 $ netstat -ano -p TCP | grep -c LISTENING        →  53
-$ agy-untun channels scan
+$ agy-Director channels scan
   发现 2 个候选:
     127.0.0.1:10808        http
     127.0.0.1:10810        http+socks5
@@ -694,7 +694,7 @@ func (p Proc) IsSidecar() bool {
 }
 ```
 
-**新增回归闸门**：`agy-untun doctor --processes` —— 干跑，列出「会被杀的」和「会被跳过的」，不做任何终止动作：
+**新增回归闸门**：`agy-Director doctor --processes` —— 干跑，列出「会被杀的」和「会被跳过的」，不做任何终止动作：
 
 ```
 将会被终止的进程（桌面版 + Go 后端）:
@@ -788,21 +788,21 @@ func Report(conflicts []Conflict) string        // 红字说明 + 冲突变量�
 
 ```bash
 # 编译（Windows）
-GOROOT="D:\agy-untun\.tools\go" "D:/agy-untun/.tools/go/bin/go.exe" build -o dist/agy-untun.exe ./cmd/agy-untun
+GOROOT="D:\agy-Director\.tools\go" "D:/agy-Director/.tools/go/bin/go.exe" build -o dist/agy-Director.exe ./cmd/agy-Director
 
 # 静态检查 + 6 平台交叉编译
-GOROOT="D:\agy-untun\.tools\go" "D:/agy-untun/.tools/go/bin/go.exe" vet ./...
+GOROOT="D:\agy-Director\.tools\go" "D:/agy-Director/.tools/go/bin/go.exe" vet ./...
 for t in "windows amd64" "windows arm64" "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
   set -- $t
-  GOROOT="D:\agy-untun\.tools\go" GOOS=$1 GOARCH=$2 \
-    "D:/agy-untun/.tools/go/bin/go.exe" build -o "dist/agy-untun-$1-$2" ./cmd/agy-untun
+  GOROOT="D:\agy-Director\.tools\go" GOOS=$1 GOARCH=$2 \
+    "D:/agy-Director/.tools/go/bin/go.exe" build -o "dist/agy-Director-$1-$2" ./cmd/agy-Director
 done
 
 # 功能验证
-./dist/agy-untun.exe channels scan       # → 127.0.0.1:10808 http / 127.0.0.1:10810 http+socks5
-./dist/agy-untun.exe doctor              # 完整诊断
-./dist/agy-untun.exe doctor --processes  # 干跑：列出会被杀的进程
-./dist/agy-untun.exe launch --ide --yes  # 启动
+./dist/agy-Director.exe channels scan       # → 127.0.0.1:10808 http / 127.0.0.1:10810 http+socks5
+./dist/agy-Director.exe doctor              # 完整诊断
+./dist/agy-Director.exe doctor --processes  # 干跑：列出会被杀的进程
+./dist/agy-Director.exe launch --ide --yes  # 启动
 
 # 关键验证：后端出站是否全部走代理
 powershell -NoProfile -Command "
@@ -833,5 +833,5 @@ powershell -NoProfile -Command "
 
 ---
 
-**提交**：`e307c4d` — `D:\agy-untun`
-**本文档**：`D:\agy-untun\docs\agy-untun-expert-response-20261117-1650.md`
+**提交**：`e307c4d` — `D:\agy-Director`
+**本文档**：`D:\agy-Director\docs\agy-Director-expert-response-20261117-1650.md`

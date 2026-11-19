@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/x1han/agy-untun/internal/channel"
+	"github.com/x1han/agy-Director/internal/channel"
 )
 
 // Options 是一次启动的参数。

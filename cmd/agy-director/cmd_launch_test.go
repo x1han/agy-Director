@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/x1han/agy-untun/internal/channel"
+	"github.com/x1han/agy-Director/internal/channel"
 )
 
 // TestChromiumBypassList 验证 NO_PROXY → Chromium bypass list 的转换。

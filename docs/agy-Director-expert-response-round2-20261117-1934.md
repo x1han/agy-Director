@@ -1,8 +1,8 @@
-# agy-untun — 专家评审第二轮整改回应
+# agy-Director — 专家评审第二轮整改回应
 
 **日期**：2026-11-17 19:34
-**回应对象**：上一轮《agy-untun 专家评审意见》的全部 P0/P1 与三项裁定
-**仓库**：`D:\agy-untun`
+**回应对象**：上一轮《agy-Director 专家评审意见》的全部 P0/P1 与三项裁定
+**仓库**：`D:\agy-Director`
 
 > 本文中所有测试域名一律使用 RFC 2606 保留的 `example.com`。
 > 宿主机上的任何真实私有域名都不出现在本文、源码、单测或提交历史里。
@@ -61,8 +61,8 @@ $ grep -rn "<该私有域名>" --include="*.go" --include="*.md" --include="*.py
 - `.example.com`（对应原来的"含子域"写法）
 - `api.example.com`（对应原来的"带子域前缀"写法）
 
-涉及文件（第一轮已改）：`docs/agy-untun-expert-response-20261117-1650.md`、
-`cmd/agy-untun/cmd_launch_test.go`（单测里的 bypass list 用例）。
+涉及文件（第一轮已改）：`docs/agy-Director-expert-response-20261117-1650.md`、
+`cmd/agy-Director/cmd_launch_test.go`（单测里的 bypass list 用例）。
 
 **本轮新增的单测也全部使用 `example.com`**：
 `internal/discovery/hexaddr_test.go`、`internal/discovery/listenaddr_test.go`、
@@ -764,7 +764,7 @@ func sameValue(a, b string) bool {
 func Fatal(conflicts []Conflict) []Conflict { ... }
 ```
 
-启动路径（`cmd/agy-untun/cmd_launch.go`）：
+启动路径（`cmd/agy-Director/cmd_launch.go`）：
 
 ```go
 // 4) Unix 上检查登录 shell 里的代理变量冲突。
@@ -807,7 +807,7 @@ if fatal := shellenv.Fatal(conflicts); len(fatal) > 0 {
 
 ## 4. P1 进程识别：exe 绝对路径 + 进程树
 
-### 4.1 判据（写在 `cmd/agy-untun/cmd_doctor.go` 的注释里）
+### 4.1 判据（写在 `cmd/agy-Director/cmd_doctor.go` 的注释里）
 
 ```
  1. **可执行文件绝对路径前缀**（首选）
@@ -867,7 +867,7 @@ if fatal := shellenv.Fatal(conflicts); len(fatal) > 0 {
 
 ```
 $ grep -rn "taskkill" cmd/ internal/
-cmd/agy-untun/cmd_doctor.go:  exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid))
+cmd/agy-Director/cmd_doctor.go:  exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid))
 ```
 
 ### 4.5 安全闸门：`doctor --processes` 干跑
@@ -876,7 +876,7 @@ cmd/agy-untun/cmd_doctor.go:  exec.Command("taskkill", "/F", "/PID", strconv.Ito
 就会被一起杀掉——**实际发生过**。所以上线前先干跑：
 
 ```
-$ agy-untun doctor --processes
+$ agy-Director doctor --processes
 将会被终止的进程（桌面版 + Go 后端）:
 ------------------------------------------------------------
   （无）
@@ -926,7 +926,7 @@ Go 的 NO_PROXY（逗号分隔）      Chromium 的 bypass list（分号或逗�
 
 另外固定追加 `<local>`——Chromium 内置的"简单主机名"规则，NO_PROXY 没有对应写法。
 
-### 5.2 实现（`cmd/agy-untun/cmd_launch.go`）
+### 5.2 实现（`cmd/agy-Director/cmd_launch.go`）
 
 ```go
 func chromiumBypassList(ch channel.Channel) string {
@@ -982,7 +982,7 @@ func chromiumBypassList(ch channel.Channel) string {
 > 产出 `*example.com`——Chromium 的语法是 `*.example.com`，
 > `*example.com` 匹配不到任何东西。单测直接把它抓了出来。
 
-### 5.3 单测（`cmd/agy-untun/cmd_launch_test.go`）
+### 5.3 单测（`cmd/agy-Director/cmd_launch_test.go`）
 
 | 用例 | 期望 |
 |---|---|
@@ -1305,12 +1305,12 @@ $ go vet ./cmd/... ./internal/...
 （无输出）
 
 $ go test ./cmd/... ./internal/...
-ok  github.com/x1han/agy-untun/cmd/agy-untun
-ok  github.com/x1han/agy-untun/internal/channel
-ok  github.com/x1han/agy-untun/internal/discovery
-ok  github.com/x1han/agy-untun/internal/shellenv
-?   github.com/x1han/agy-untun/internal/launcher  [no test files]
-?   github.com/x1han/agy-untun/internal/procs     [no test files]
+ok  github.com/x1han/agy-Director/cmd/agy-Director
+ok  github.com/x1han/agy-Director/internal/channel
+ok  github.com/x1han/agy-Director/internal/discovery
+ok  github.com/x1han/agy-Director/internal/shellenv
+?   github.com/x1han/agy-Director/internal/launcher  [no test files]
+?   github.com/x1han/agy-Director/internal/procs     [no test files]
 
 $ 交叉编译（CGO_ENABLED=0）
 windows/amd64   OK

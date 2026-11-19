@@ -1,11 +1,18 @@
 name: release
 
-# 推 tag 时交叉编译 6 个平台并发布 Release 附件。
+# 推 tag 时交叉编译各平台并发布 Release 附件。
 #
 # 触发方式：
 #   git tag v1.0.0 && git push origin v1.0.0
 #
-# 产物命名：agy-untun-<os>-<arch>[.exe]
+# 产物命名：
+#   agy-Director-<os>-<arch>.exe        Windows（带图标）
+#   agy-Director-<os>-<arch>.tar.gz     Linux
+#   agy-Director-<os>-<arch>.zip        macOS（.app bundle）
+#
+# macOS 的 .app bundle 必须在 **macOS runner** 上造
+# （iconutil / sips / codesign 都是 macOS 独有的），
+# 所以 darwin 走独立的 job，其余平台在 ubuntu 上交叉编译。
 
 on:
   push:
@@ -15,6 +22,9 @@ on:
 
 permissions:
   contents: write
+
+env:
+  APP_NAME: agy-Director
 
 jobs:
   build:
@@ -26,8 +36,6 @@ jobs:
         include:
           - { os: linux,   arch: amd64 }
           - { os: linux,   arch: arm64 }
-          - { os: darwin,  arch: amd64 }
-          - { os: darwin,  arch: arm64 }
           - { os: windows, arch: amd64 }
           - { os: windows, arch: arm64 }
 
@@ -39,27 +47,113 @@ jobs:
           go-version: "1.25"
           cache: true
 
+      - name: 下载依赖
+        run: go mod download
+
       - name: 构建
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          out="agy-untun-${{ matrix.os }}-${{ matrix.arch }}"
+          out="${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}"
           if [ "${{ matrix.os }}" = "windows" ]; then out="${out}.exe"; fi
-          go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/agy-untun
+          # 版本号注入：main.version 由 -ldflags 赋值。
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o "$out" ./cmd/agy-director
           echo "built: $out"
+
+      - name: 打包（Linux）
+        if: matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          base="${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}"
+          mkdir -p "$base"
+          cp "$base" "$base/${{ env.APP_NAME }}"
+          cp LICENSE README.md "$base/"
+          tar -czf "$base.tar.gz" "$base"
+          rm -rf "$base"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: agy-untun-${{ matrix.os }}-${{ matrix.arch }}
-          path: agy-untun-${{ matrix.os }}-${{ matrix.arch }}*
+          name: ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}*
+          if-no-files-found: error
+
+  macos:
+    name: build macos-${{ matrix.arch }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: darwin, arch: amd64 }
+          - { os: darwin, arch: arm64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: 下载依赖
+        run: go mod download
+
+      - name: 构建
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          out="${{ env.APP_NAME }}-darwin-${{ matrix.arch }}"
+          # CGO_ENABLED=0：.app 里的 dylib 搜索路径在
+          # "从 Finder 双击"和"从 Terminal 跑"两种启动方式下不一致，
+          # 静态编译可以彻底避开这个坑。
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o "$out" ./cmd/agy-director
+          echo "built: $out"
+
+      - name: 构造 .app bundle
+        run: |
+          set -euo pipefail
+          bash tools/macos-app.sh \
+            "${{ env.APP_NAME }}-darwin-${{ matrix.arch }}" \
+            dist "${{ github.ref_name }}"
+
+      - name: 冒烟测试 bundle 结构
+        run: |
+          set -euo pipefail
+          APP="dist/${{ env.APP_NAME }}.app"
+          test -x "$APP/Contents/MacOS/${{ env.APP_NAME }}"
+          test -f "$APP/Contents/Resources/${{ env.APP_NAME }}.icns"
+          test -f "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
+          codesign -v "$APP"
+          echo "bundle 结构 OK"
+
+      - name: 打包
+        run: |
+          set -euo pipefail
+          cd dist
+          zip -qry "../${{ env.APP_NAME }}-darwin-${{ matrix.arch }}.zip" "${{ env.APP_NAME }}.app"
+          cd ..
+          rm -rf dist "${{ env.APP_NAME }}-darwin-${{ matrix.arch }}"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-darwin-${{ matrix.arch }}
+          path: ${{ env.APP_NAME }}-darwin-${{ matrix.arch }}.zip
           if-no-files-found: error
 
   release:
     name: 发布 Release
-    needs: build
+    needs: [build, macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:

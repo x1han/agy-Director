@@ -54,8 +54,20 @@ func (c Channel) Addr() string {
 // socks5 通道同样用它，因为 Go 的 net/http.Transport 原生支持
 // "socks5://" scheme（见 x/net/http/httpproxy 与 x/net/proxy）。
 func (c Channel) URL() string {
+	scheme := string(c.Scheme)
+	if scheme == "" {
+		// 协议没定下来时按 http 处理。
+		//
+		// 否则 URL() 会返回 "//127.0.0.1:10808" 这种没有协议头的
+		// 垃圾，注入到 HTTP_PROXY 里是无效的。
+		//
+		// 选 http 而不是 socks5：绝大多数本地代理客户端
+		// （v2rayN / Clash / sing-box）都同时监听 http 端口，
+		// 而 socks5 需要额外的握手协商。
+		scheme = string(SchemeHTTP)
+	}
 	u := url.URL{
-		Scheme: string(c.Scheme),
+		Scheme: scheme,
 		Host:   c.Addr(),
 	}
 	return u.String()

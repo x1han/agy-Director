@@ -1,4 +1,4 @@
-// Command agy-untun 让 Antigravity 桌面版与 agy CLI 走本地代理通道，
+// Command agy-Director 让 Antigravity 桌面版与 agy CLI 走本地代理通道，
 // 全程不启用 TUN。
 //
 // 设计与使用见 docs/ 下的架构评审报告。
@@ -7,19 +7,25 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // usage 是顶层帮助文本。
-const usage = `agy-untun — 让 Antigravity 走本地代理通道（无需 TUN）
+const usage = `agy-Director — 让 Antigravity 走本地代理通道（无需 TUN）
 
 用法:
-  agy-untun [选项]             等价于 agy-untun launch（双击即用的默认动作）
-  agy-untun launch [选项]     探测通道并启动 Antigravity
-  agy-untun channels [子命令]  管理代理通道
-  agy-untun doctor             诊断安装、通道与运行环境
-  agy-untun wrap <命令>...     在代理环境变量下运行任意命令
-  agy-untun version            显示版本
-  agy-untun help               显示本帮助
+  agy-Director                终端图形界面（TUI）：扫描 → 确认 → 启动
+  agy-Director tui [选项]     同上，可加 --verbose / --no-wait
+  agy-Director launch [选项]  命令行方式：探测通道并启动 Antigravity
+  agy-Director channels [子命令]  管理代理通道
+  agy-Director doctor         诊断安装、通道与运行环境
+  agy-Director wrap <命令>...  在代理环境变量下运行任意命令
+  agy-Director version        显示版本
+  agy-Director help           显示本帮助
+
+tui 选项:
+  --verbose      输出 debug 级日志
+  --no-wait      退出前不等回车（脚本里用）
 
 launch 选项:
   --ide            强制启动桌面版 Antigravity
@@ -41,11 +47,19 @@ doctor 选项:
   --processes      只列出「会被终止的进程」，不做任何终止动作
 `
 
+// verboseMode 开了 debug 级日志。
+var verboseMode bool
+
+// noWait 退出前不等回车。
+var noWait bool
+
 func main() {
 	args := normalizeArgs(os.Args[1:])
 
 	var err error
 	switch args[0] {
+	case "tui":
+		err = runTUI(args[1:])
 	case "launch":
 		err = runLaunch(args[1:])
 	case "channels":
@@ -55,7 +69,7 @@ func main() {
 	case "wrap":
 		err = runWrap(args[1:])
 	case "version":
-		fmt.Println("agy-untun " + version)
+		fmt.Println("agy-Director " + version)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -71,16 +85,35 @@ func main() {
 
 // normalizeArgs 规范化命令行参数。
 //
-// **无参数时默认执行 launch。**
+// **无参数时默认执行 tui。**
 //
-// 这样双击 agy-untun.exe（或从桌面快捷方式启动）就是
-// "一键启动 Antigravity"，而不是打印一段帮助然后闪退。
-// 想要帮助信息用 help / -h / --help。
+// 这样双击 agy-Director.exe（或从桌面快捷方式启动）就是
+// "打开终端 → 出 TUI 界面 → 确认 → 启动 Antigravity"，
+// 而不是打印一段帮助然后闪退。
+// 想要纯命令行方式用 launch 子命令。
 func normalizeArgs(args []string) []string {
 	if len(args) == 0 {
-		return []string{"launch"}
+		return []string{"tui"}
 	}
 	return args
+}
+
+// parseTUIArgs 解析 tui 子命令的参数。
+func parseTUIArgs(args []string) error {
+	for _, a := range args {
+		switch a {
+		case "--verbose", "-v":
+			verboseMode = true
+		case "--no-wait":
+			noWait = true
+		default:
+			if strings.HasPrefix(a, "-") {
+				return fmt.Errorf("未知选项: %s", a)
+			}
+			return fmt.Errorf("无法识别的参数: %s", a)
+		}
+	}
+	return nil
 }
 
 // version 由构建时 -ldflags 注入。

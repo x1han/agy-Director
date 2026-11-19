@@ -13,11 +13,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/x1han/agy-untun/internal/channel"
-	"github.com/x1han/agy-untun/internal/discovery"
-	"github.com/x1han/agy-untun/internal/launcher"
-	"github.com/x1han/agy-untun/internal/procs"
-	"github.com/x1han/agy-untun/internal/shellenv"
+	"github.com/x1han/agy-Director/internal/channel"
+	"github.com/x1han/agy-Director/internal/config"
+	"github.com/x1han/agy-Director/internal/discovery"
+	"github.com/x1han/agy-Director/internal/launcher"
+	"github.com/x1han/agy-Director/internal/procs"
+	"github.com/x1han/agy-Director/internal/scan"
+	"github.com/x1han/agy-Director/internal/shellenv"
 )
 
 // runDoctor 输出完整的诊断报告。
@@ -28,7 +30,7 @@ func runDoctor(args []string) error {
 		return listKillTargets()
 	}
 
-	fmt.Println("agy-untun 诊断")
+	fmt.Println("agy-Director 诊断")
 	fmt.Println(strings.Repeat("=", 60))
 
 	section("运行环境")
@@ -111,12 +113,12 @@ func runDoctor(args []string) error {
 			fmt.Println("    Antigravity 会用登录 shell 的值覆盖启动器注入的值。")
 			fmt.Println("    致命档（大写名被改）必须先处理；警告档只影响第三方工具。")
 			fmt.Println("    需要你手动从 rc 文件里移除这些 export。")
-			fmt.Println("    （agy-untun 绝不修改你的 shell 配置文件。）")
+			fmt.Println("    （agy-Director 绝不修改你的 shell 配置文件。）")
 		}
 	}
 
 	section("本机代理端点")
-	candidates, err := discoverChannels()
+	candidates, err := scan.Discover()
 	if err != nil {
 		fmt.Printf("  扫描失败: %v\n", err)
 	} else if len(candidates) == 0 {
@@ -132,11 +134,11 @@ func runDoctor(args []string) error {
 	}
 
 	section("配置的通道")
-	cfg, err := loadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		fmt.Printf("  读取失败: %v\n", err)
 	} else if len(cfg.Channels) == 0 {
-		path, _ := configFile()
+		path, _ := config.File()
 		fmt.Printf("  还没有配置任何通道（%s）\n", path)
 	} else {
 		for _, c := range cfg.Channels {
@@ -223,10 +225,10 @@ func cliRunning() bool {
 
 // runWrap 在代理环境变量下运行任意命令。
 // 这给「让 agy 命令永远走代理」提供了基础：
-// 可以生成 shell alias `agy='agy-untun wrap agy'`。
+// 可以生成 shell alias `agy='agy-Director wrap agy'`。
 func runWrap(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("用法: agy-untun wrap <命令> [参数...]")
+		return fmt.Errorf("用法: agy-Director wrap <命令> [参数...]")
 	}
 
 	ch, err := selectChannel(&launchOptions{})
