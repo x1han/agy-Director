@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/x1han/agy-Director/internal/channel"
 	"github.com/x1han/agy-Director/internal/console"
@@ -145,19 +148,77 @@ func printSummary(target discovery.Target, ch channel.Channel, logPath string) {
 	fmt.Println(strings.Repeat("─", 56))
 }
 
-// waitForEnter 等用户按回车。
+// waitForEnter 等用户按回车，**或者最多等 waitTimeout 秒**。
 //
 // Windows 上控制台窗口随进程退出而关闭 —— 不等的话用户什么都看不到。
 // macOS 的 Terminal 窗口本来就常驻，但走同一条路径保持行为一致。
 //
-// --no-wait 时直接返回（脚本里用）。
+// 为什么不无限等：用户双击图标只想看一眼"扫到了什么、用了哪个通道"，
+// 不想被一个"按回车关闭"卡在那儿。所以默认最多等 3 秒：
+//   - 3 秒到了自动关
+//   - 期间按回车可以立刻关
+//
+// --no-wait 时直接返回（脚本里用）；--wait / --wait=N 可以调这个上限。
 func waitForEnter() {
 	if noWait {
 		return
 	}
-	fmt.Print("\n按回车关闭...")
-	var s string
-	_, _ = fmt.Fscanln(os.Stdin, &s)
+
+	// 无限等：保持原来的行为（等回车）。
+	if waitTimeout <= 0 {
+		fmt.Print("\n按回车关闭...")
+		var s string
+		_, _ = fmt.Fscanln(os.Stdin, &s)
+		return
+	}
+
+	fmt.Printf("\n按回车关闭...（%d 秒后自动关闭）", waitTimeout)
+	waitForEnterOrTimeout(os.Stdin, time.Duration(waitTimeout)*time.Second)
+}
+
+// waitForEnterOrTimeout 等回车或超时，谁先来算谁。
+//
+// 抽出来是为了能测 —— 直接测 waitForEnter 会读到测试进程自己的
+// stdin，测不了。
+//
+// ⚠️ 读 stdin 的 goroutine 会一直阻塞在 Read 上，直到真的按了回车。
+// 主流程超时返回后进程就退了，那个 goroutine 会被一起带走。
+// 但如果调用方不退出，它会一直占着这个 reader —— 所以这里
+// 传进来的 io.Reader 用完就不要再复用。
+func waitForEnterOrTimeout(r io.Reader, timeout time.Duration) {
+	reader := bufio.NewReader(r)
+	entered := make(chan struct{})
+
+	go func() {
+		for {
+			b, err := reader.ReadByte()
+			if err != nil {
+				// EOF 或读错误 —— **不当作"用户按了回车"**。
+				// stdin 被关掉 / 被重定向到空文件时，
+				// 这里直接返回，entered 永远不会关闭，
+				// 主流程会照常等到超时。
+				//
+				// （早先这里 close(ch) 会让 select 立刻返回，
+				//  等于"stdin 一空窗口就闪退"。）
+				return
+			}
+			// 只认回车：Windows 是 \r，Unix 是 \n。
+			// 其它按键忽略 —— 用户可能手滑敲了个字母，
+			// 不该把窗口关了。
+			if b == '\r' || b == '\n' {
+				close(entered)
+				return
+			}
+		}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-entered:
+	case <-timer.C:
+	}
 }
 
 // runPlainSummary 是没有终端时的退化路径。

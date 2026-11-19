@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,8 @@ const usage = `agy-Director — 让 Antigravity 走本地代理通道（无需 T
 tui 选项:
   --verbose      输出 debug 级日志
   --no-wait      退出前不等回车（脚本里用）
+  --wait=N       摘要页最多等 N 秒（默认 3，期间按回车可立刻关）
+  --wait         摘要页一直等到按回车
 
 launch 选项:
   --ide            强制启动桌面版 Antigravity
@@ -52,6 +55,15 @@ var verboseMode bool
 
 // noWait 退出前不等回车。
 var noWait bool
+
+// waitTimeout 是摘要页的等待上限（秒）。
+//
+// 摘要页（目标/通道/代理/日志 那几行）默认最多等 3 秒 ——
+// 用户双击图标只想看一眼结果，不想被一个"按回车关闭"卡住。
+// 3 秒到了自动关；期间按回车可以立刻关。
+//
+// 0 表示不自动关（一直等到回车），--no-wait 则完全不等。
+var waitTimeout = 3
 
 func main() {
 	args := normalizeArgs(os.Args[1:])
@@ -101,11 +113,21 @@ func normalizeArgs(args []string) []string {
 // parseTUIArgs 解析 tui 子命令的参数。
 func parseTUIArgs(args []string) error {
 	for _, a := range args {
-		switch a {
-		case "--verbose", "-v":
+		switch {
+		case a == "--verbose" || a == "-v":
 			verboseMode = true
-		case "--no-wait":
+		case a == "--no-wait":
 			noWait = true
+		case a == "--wait" || a == "--wait-forever":
+			// 摘要页一直等到用户按回车（关掉自动关闭）。
+			waitTimeout = 0
+		case strings.HasPrefix(a, "--wait="):
+			// --wait=10 → 最多等 10 秒。
+			secs, err := strconv.Atoi(strings.TrimPrefix(a, "--wait="))
+			if err != nil || secs < 0 {
+				return fmt.Errorf("无效的等待秒数: %s", strings.TrimPrefix(a, "--wait="))
+			}
+			waitTimeout = secs
 		default:
 			if strings.HasPrefix(a, "-") {
 				return fmt.Errorf("未知选项: %s", a)
