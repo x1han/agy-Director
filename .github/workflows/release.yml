@@ -69,11 +69,14 @@ jobs:
         run: |
           set -euo pipefail
           base="${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}"
-          mkdir -p "$base"
-          cp "$base" "$base/${{ env.APP_NAME }}"
-          cp LICENSE README.md "$base/"
-          tar -czf "$base.tar.gz" "$base"
-          rm -rf "$base"
+          # ⚠️ 解包目录名不能和二进制同名 ——
+          # 二进制就叫 "$base"，同名的话 mkdir 会报 "File exists"。
+          pkg="${base}-pkg"
+          mkdir -p "$pkg"
+          mv "$base" "$pkg/${{ env.APP_NAME }}"
+          cp LICENSE README.md "$pkg/"
+          tar -czf "$base.tar.gz" -C "$(dirname "$pkg")" "$(basename "$pkg")"
+          rm -rf "$pkg"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
