@@ -1305,12 +1305,12 @@ $ go vet ./cmd/... ./internal/...
 （无输出）
 
 $ go test ./cmd/... ./internal/...
-ok  github.com/user/agy-untun/cmd/agy-untun
-ok  github.com/user/agy-untun/internal/channel
-ok  github.com/user/agy-untun/internal/discovery
-ok  github.com/user/agy-untun/internal/shellenv
-?   github.com/user/agy-untun/internal/launcher  [no test files]
-?   github.com/user/agy-untun/internal/procs     [no test files]
+ok  github.com/x1han/agy-untun/cmd/agy-untun
+ok  github.com/x1han/agy-untun/internal/channel
+ok  github.com/x1han/agy-untun/internal/discovery
+ok  github.com/x1han/agy-untun/internal/shellenv
+?   github.com/x1han/agy-untun/internal/launcher  [no test files]
+?   github.com/x1han/agy-untun/internal/procs     [no test files]
 
 $ 交叉编译（CGO_ENABLED=0）
 windows/amd64   OK

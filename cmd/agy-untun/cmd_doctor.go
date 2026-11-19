@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/agy-untun/internal/channel"
-	"github.com/user/agy-untun/internal/discovery"
-	"github.com/user/agy-untun/internal/launcher"
-	"github.com/user/agy-untun/internal/procs"
-	"github.com/user/agy-untun/internal/shellenv"
+	"github.com/x1han/agy-untun/internal/channel"
+	"github.com/x1han/agy-untun/internal/discovery"
+	"github.com/x1han/agy-untun/internal/launcher"
+	"github.com/x1han/agy-untun/internal/procs"
+	"github.com/x1han/agy-untun/internal/shellenv"
 )
 
 // runDoctor 输出完整的诊断报告。

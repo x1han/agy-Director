@@ -2,8 +2,6 @@
 
 让 Google Antigravity（桌面版与 `agy` CLI）**不走 TUN**也能出网：启动前探测可用代理通道，注入进程级代理环境变量后再启动。
 
-> 状态：架构设计阶段。详见 `docs/` 下的评审报告。
-
 ## 为什么需要它
 
 Antigravity 的网络请求由 Go 后端 `language_server`（桌面版 `resources/bin/language_server.exe`，CLI 内嵌同源）发出。该后端**只从环境变量**解析代理，不读 Windows 注册表的系统代理，也不走 Electron 的 `--proxy-server`。因此不开 TUN 时，Go 后端会直连并被中断（`unexpected EOF`），而 UI 层看起来一切正常。
@@ -48,6 +46,37 @@ if (!electron_1.app.commandLine.hasSwitch('remote-debugging-port')) {
 
 用户自己传了 `--remote-debugging-port` 或 `--remote-debugging-address` 时，agy-untun **不会重复追加**（Chromium 取最后一个同名开关，重复追加会覆盖用户指定的端口）。
 
+## 安装
+
+从 [Releases](https://github.com/x1han/agy-untun/releases) 下载对应平台的二进制，或用 Go 自行构建（见下文）。
+
+把二进制放进 `PATH` 里的任意目录即可。
+
+## 使用
+
+```bash
+agy-untun            # 等价于 agy-untun launch：探测通道并启动 Antigravity
+agy-untun doctor     # 诊断：通道、代理环境变量、运行中的实例、登录 shell 冲突
+agy-untun channels   # 管理代理通道
+agy-untun wrap <cmd> # 在代理环境变量下运行任意命令
+```
+
+`launch` 的选项：
+
+| 选项 | 说明 |
+|---|---|
+| `--ide` | 强制启动桌面版 Antigravity |
+| `--cli` | 强制启动 `agy` CLI |
+| `--channel <名>` | 指定通道（默认用配置里的首选，或自动探测） |
+| `--proxy <URL>` | 直接指定代理 URL，如 `http://127.0.0.1:10808` |
+| `--scan` | 忽略配置，扫描本机寻找可用通道 |
+| `--yes` | 不交互，全部用自动选择 |
+| `-- <参数>` | 之后的参数原样传给被启动的程序 |
+
+**它不改任何系统设置**：不写注册表代理、不改全局环境变量、不碰你的 shell 配置文件（`.bashrc` / `.zshrc` / `.profile`）。所有代理配置只以**进程环境变量**的形式注入到被启动的那个进程及其子进程。
+
+唯一会改的东西是**你自己传的参数**（`--` 之后）—— 那是你自己的决定。
+
 ## 构建
 
 ```bash
@@ -71,19 +100,23 @@ GOOS=windows GOARCH=arm64 go build -o dist/agy-untun-arm64.exe     ./cmd/agy-unt
 
 | 文件 | 说明 |
 |---|---|
-| `assets/antigravity-one-color.svg` | Antigravity 单色标志（`#202124`），来源：Google 官方 |
-| `assets/antigravity-tile.svg` | 上者 + 白底圆角矩形（启动器实际使用） |
+| `assets/agy-untun-logo.svg` | Antigravity 单色标志（`#202124`），来源：Google 官方 |
+| `assets/agy-untun-tile.svg` | 上者 + 白底圆角矩形（启动器实际使用） |
 | `assets/agy-old-man.svg` | 早期 Antigravity 品牌（机器人脸），备用 |
-| `assets/agy-untun.ico` | 由 `antigravity-tile.svg` 生成的多尺寸 Windows ICO |
+| `assets/agy-untun.ico` | 由 `agy-untun-tile.svg` 生成的多尺寸 Windows ICO |
 
 重新生成 ICO：
 
 ```bash
-python tools/icon/build.py assets/antigravity-tile.svg assets/agy-untun.ico
+python tools/icon/build.py assets/agy-untun-tile.svg assets/agy-untun.ico
 ```
 
 构建脚本只用标准库 + 无头 Chrome，无需额外 Python 依赖。
 
+## 文档
+
+`docs/` 下是开发过程中的架构评审与专家问答记录，解释了各个设计决定的依据（含关键代码原文引用）。
+
 ## 许可
 
-待定。
+MIT，见 [LICENSE](LICENSE)。

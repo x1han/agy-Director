@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/user/agy-untun/internal/channel"
-	"github.com/user/agy-untun/internal/discovery"
-	"github.com/user/agy-untun/internal/launcher"
-	"github.com/user/agy-untun/internal/shellenv"
+	"github.com/x1han/agy-untun/internal/channel"
+	"github.com/x1han/agy-untun/internal/discovery"
+	"github.com/x1han/agy-untun/internal/launcher"
+	"github.com/x1han/agy-untun/internal/shellenv"
 )
 
 // 启动桌面版时追加的 CDP 调试参数。

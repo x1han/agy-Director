@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/agy-untun/internal/channel"
-	"github.com/user/agy-untun/internal/discovery"
+	"github.com/x1han/agy-untun/internal/channel"
+	"github.com/x1han/agy-untun/internal/discovery"
 )
 
 // runChannels 是 channels 子命令的入口。
