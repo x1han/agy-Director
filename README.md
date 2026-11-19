@@ -154,6 +154,14 @@ if (!electron_1.app.commandLine.hasSwitch('remote-debugging-port')) {
 
 Linux 产物是 `CGO_ENABLED=0` 静态编译的，在任何 glibc/musl 发行版上都能跑，不需要单独的 musl 版本。
 
+Linux 的 `.tar.gz` 解包后是一个 `agy-Director-linux-<arch>/` 目录，
+里面是 `agy-Director` 可执行文件加 README/LICENSE：
+
+```bash
+tar xzf agy-Director-linux-x64.tar.gz
+./agy-Director-linux-x64/agy-Director
+```
+
 ## 构建
 
 ```bash

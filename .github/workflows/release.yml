@@ -88,16 +88,20 @@ jobs:
         run: |
           set -euo pipefail
           base="${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}"
-          # ⚠️ 用 cp 而不是 mv —— mv 会把二进制挪进 pkg 目录，
-          # 后面 rm -rf "$pkg" 就把它删了。
-          # ⚠️ 解包目录名不能和二进制同名 ——
-          # 二进制就叫 "$base"，同名的话 mkdir 会报 "File exists"。
-          pkg="${base}-pkg"
+          # 解包出来的目录名要好看：用户 tar xzf 之后应该看到
+          # "agy-Director-linux-x64/"，而不是 "agy-Director-linux-x64-pkg/"。
+          #
+          # ⚠️ 不能直接在当前目录 mkdir "$base" ——
+          # 二进制本身就叫 "$base"（没有扩展名），同名会报 "File exists"。
+          # 所以挪到一个临时工作区里打包，打完再把 tar.gz 搬回来。
+          work="$(mktemp -d)"
+          pkg="$work/$base"
           mkdir -p "$pkg"
+          # ⚠️ 用 cp 而不是 mv —— mv 会把二进制挪走，后面就没得 cp 回来了。
           cp "$base" "$pkg/${{ env.APP_NAME }}"
           cp LICENSE README.md "$pkg/"
-          tar -czf "$base.tar.gz" -C "$(dirname "$pkg")" "$(basename "$pkg")"
-          rm -rf "$pkg"
+          tar -czf "$base.tar.gz" -C "$work" "$base"
+          rm -rf "$work"
 
       - name: 打包（Windows）
         if: matrix.os == 'windows'

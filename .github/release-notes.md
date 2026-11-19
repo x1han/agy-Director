@@ -20,6 +20,9 @@
 
 Linux 产物是静态链接的，任何 glibc/musl 发行版都能跑。
 
+Linux 的 `.tar.gz` 解包后是一个 `agy-Director-linux-<arch>/` 目录，
+里面是 `agy-Director` 可执行文件加 README/LICENSE。
+
 校验和见 `SHA256SUMS.txt`。
 
 ### 用法

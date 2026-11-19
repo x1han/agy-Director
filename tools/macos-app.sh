@@ -43,6 +43,14 @@ BIN="${1:?用法: macos-app.sh <二进制路径> <输出目录> [版本号]}"
 OUTDIR="${2:?用法: macos-app.sh <二进制路径> <输出目录> [版本号]}"
 VERSION="${3:-1.0.0}"
 
+# ── 版本号必须去掉 "v" 前缀 ───────────────────────────────────────────
+#
+# CI 传进来的是 git tag 名（github.ref_name），形如 "v1.2.0"。
+# 但 CFBundleShortVersionString 要的是**纯数字点分版本** "1.2.0" ——
+# 带 "v" 的值在 macOS 上会被当成非法版本，
+# Finder 的"显示简介"里显示不出来，Spotlight 也搜不到版本号。
+VERSION="${VERSION#v}"
+
 APP_NAME="agy-Director"
 BUNDLE="$OUTDIR/$APP_NAME.app"
 ICNS_SRC="assets/$APP_NAME.png"
