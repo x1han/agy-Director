@@ -128,11 +128,31 @@ if (!electron_1.app.commandLine.hasSwitch('remote-debugging-port')) {
 
 从 [Releases](https://github.com/x1han/agy-Director/releases) 下载对应平台的产物，或用 Go 自行构建（见下文）。
 
+### 怎么挑架构
+
+| 架构名 | 是什么 | 谁用 |
+|---|---|---|
+| **x64** | x86-64 | **Intel 和 AMD 的 CPU 都用这个**（绝大多数 PC） |
+| **arm64** | ARM64 | Apple Silicon（M 系列）、高通 Snapdragon X（Windows on ARM）、ARM 服务器 |
+
+> `x64` 指的是**指令集**，不是某个 CPU 厂商。两家都出 x86-64 的 CPU，跑的是同一个二进制。
+
+### 产物清单
+
 | 平台 | 产物 | 说明 |
 |---|---|---|
-| Windows | `agy-Director-windows-amd64.exe` | 带图标，双击弹终端 |
-| macOS | `agy-Director-darwin-arm64.zip` | 解压得到 `agy-Director.app`，双击弹终端 |
-| Linux | `agy-Director-linux-amd64.tar.gz` | 直接运行 |
+| Windows x64 | `agy-Director-windows-x64.exe` | 带图标，双击弹终端 |
+| Windows x64 | `agy-Director-windows-x64.zip` | zip 版（企业分发用） |
+| Windows ARM64 | `agy-Director-windows-arm64.exe` | 同上 |
+| Windows ARM64 | `agy-Director-windows-arm64.zip` | 同上 |
+| macOS Intel | `agy-Director-macos-x64.zip` | 解压得到 `agy-Director.app`，双击弹终端 |
+| macOS Intel | `agy-Director-macos-x64.app.tar.gz` | 同上（tar.gz 版） |
+| macOS Apple Silicon | `agy-Director-macos-arm64.zip` | 同上 |
+| macOS Apple Silicon | `agy-Director-macos-arm64.app.tar.gz` | 同上 |
+| Linux x64 | `agy-Director-linux-x64.tar.gz` | 静态链接，直接运行 |
+| Linux ARM64 | `agy-Director-linux-arm64.tar.gz` | 同上 |
+
+Linux 产物是 `CGO_ENABLED=0` 静态编译的，在任何 glibc/musl 发行版上都能跑，不需要单独的 musl 版本。
 
 ## 构建
 
@@ -143,13 +163,15 @@ go build -o agy-Director ./cmd/agy-director
 交叉编译：
 
 ```bash
-GOOS=linux   GOARCH=amd64 go build -o dist/agy-Director-linux-amd64   ./cmd/agy-director
-GOOS=linux   GOARCH=arm64 go build -o dist/agy-Director-linux-arm64   ./cmd/agy-director
-GOOS=darwin  GOARCH=amd64 go build -o dist/agy-Director-darwin-amd64  ./cmd/agy-director
-GOOS=darwin  GOARCH=arm64 go build -o dist/agy-Director-darwin-arm64  ./cmd/agy-director
-GOOS=windows GOARCH=amd64 go build -o dist/agy-Director-windows-amd64.exe ./cmd/agy-director
+GOOS=linux   GOARCH=amd64 go build -o dist/agy-Director-linux-x64      ./cmd/agy-director
+GOOS=linux   GOARCH=arm64 go build -o dist/agy-Director-linux-arm64    ./cmd/agy-director
+GOOS=darwin  GOARCH=amd64 go build -o dist/agy-Director-macos-x64      ./cmd/agy-director
+GOOS=darwin  GOARCH=arm64 go build -o dist/agy-Director-macos-arm64    ./cmd/agy-director
+GOOS=windows GOARCH=amd64 go build -o dist/agy-Director-windows-x64.exe   ./cmd/agy-director
 GOOS=windows GOARCH=arm64 go build -o dist/agy-Director-windows-arm64.exe ./cmd/agy-director
 ```
+
+（Go 的 `GOARCH=amd64` 对应的就是产物名里的 `x64`。）
 
 Windows 的图标资源（`cmd/agy-director/rsrc_windows_*.syso`）已经提交进仓库，交叉编译时 Go 链接器会自动带上，不需要额外步骤。
 

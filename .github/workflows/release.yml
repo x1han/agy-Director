@@ -5,10 +5,29 @@ name: release
 # 触发方式：
 #   git tag v1.0.0 && git push origin v1.0.0
 #
-# 产物命名：
-#   agy-Director-<os>-<arch>.exe        Windows（带图标）
-#   agy-Director-<os>-<arch>.tar.gz     Linux
-#   agy-Director-<os>-<arch>.zip        macOS（.app bundle）
+# ── 产物命名 ──────────────────────────────────────────────────────────
+#
+# 架构名用 x64 / arm64（opencode 那一套），不用 Go 的 amd64：
+#
+#   x64   = x86-64，**Intel 和 AMD 的 CPU 都用它**
+#          （Go 里的 GOARCH=amd64 指的就是这个）
+#   arm64 = ARM64，Apple Silicon（M 系列）/ 高通 Snapdragon X / ARM 服务器
+#
+# 产物清单：
+#
+#   agy-Director-windows-x64.exe          Windows x64（带图标）
+#   agy-Director-windows-x64.zip          Windows x64（zip 版，给企业分发）
+#   agy-Director-windows-arm64.exe        Windows ARM64
+#   agy-Director-windows-arm64.zip        Windows ARM64
+#   agy-Director-macos-x64.zip            macOS Intel（.app bundle）
+#   agy-Director-macos-x64.app.tar.gz     macOS Intel（.app bundle）
+#   agy-Director-macos-arm64.zip          macOS Apple Silicon
+#   agy-Director-macos-arm64.app.tar.gz   macOS Apple Silicon
+#   agy-Director-linux-x64.tar.gz         Linux x64
+#   agy-Director-linux-arm64.tar.gz       Linux ARM64
+#
+# Linux 的二进制是 CGO_ENABLED=0 静态编译的，
+# 不需要单独的 musl 版本（opencode 要 musl 是因为它用了 CGO）。
 #
 # macOS 的 .app bundle 必须在 **macOS runner** 上造
 # （iconutil / sips / codesign 都是 macOS 独有的），
@@ -34,10 +53,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: linux,   arch: amd64 }
-          - { os: linux,   arch: arm64 }
-          - { os: windows, arch: amd64 }
-          - { os: windows, arch: arm64 }
+          - { os: linux,   goarch: amd64, arch: x64 }
+          - { os: linux,   goarch: arm64, arch: arm64 }
+          - { os: windows, goarch: amd64, arch: x64 }
+          - { os: windows, goarch: arm64, arch: arm64 }
 
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +72,7 @@ jobs:
       - name: 构建
         env:
           GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
           out="${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}"
@@ -78,6 +97,24 @@ jobs:
           tar -czf "$base.tar.gz" -C "$(dirname "$pkg")" "$(basename "$pkg")"
           rm -rf "$pkg"
 
+      - name: 打包（Windows）
+        if: matrix.os == 'windows'
+        run: |
+          set -euo pipefail
+          base="${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}"
+          # zip 版给企业分发（有些环境不让直接跑 exe）。
+          pkg="${base}-pkg"
+          mkdir -p "$pkg"
+          mv "$base.exe" "$pkg/${{ env.APP_NAME }}.exe"
+          cp LICENSE README.md "$pkg/"
+          # ubuntu-latest 预装了 zip，但不显式装一次更保险
+          # （万一镜像变了就少了产物，而不是整个 job 挂掉）。
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq zip
+          fi
+          (cd "$pkg" && zip -qry "../$base.zip" .)
+          rm -rf "$pkg"
+
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
@@ -92,8 +129,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: darwin, arch: amd64 }
-          - { os: darwin, arch: arm64 }
+          - { os: darwin, goarch: amd64, arch: x64 }
+          - { os: darwin, goarch: arm64, arch: arm64 }
 
     steps:
       - uses: actions/checkout@v4
@@ -109,10 +146,10 @@ jobs:
       - name: 构建
         env:
           GOOS: darwin
-          GOARCH: ${{ matrix.arch }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
-          out="${{ env.APP_NAME }}-darwin-${{ matrix.arch }}"
+          out="${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}"
           # CGO_ENABLED=0：.app 里的 dylib 搜索路径在
           # "从 Finder 双击"和"从 Terminal 跑"两种启动方式下不一致，
           # 静态编译可以彻底避开这个坑。
@@ -125,7 +162,7 @@ jobs:
         run: |
           set -euo pipefail
           bash tools/macos-app.sh \
-            "${{ env.APP_NAME }}-darwin-${{ matrix.arch }}" \
+            "${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}" \
             dist "${{ github.ref_name }}"
 
       - name: 冒烟测试 bundle 结构
@@ -142,16 +179,21 @@ jobs:
       - name: 打包
         run: |
           set -euo pipefail
-          cd dist
-          zip -qry "../${{ env.APP_NAME }}-darwin-${{ matrix.arch }}.zip" "${{ env.APP_NAME }}.app"
-          cd ..
-          rm -rf dist "${{ env.APP_NAME }}-darwin-${{ matrix.arch }}"
+          base="${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}"
+          cp LICENSE README.md dist/
+          # zip 版：解压得到 .app
+          (cd dist && zip -qry "../$base.zip" "${{ env.APP_NAME }}.app" LICENSE README.md)
+          # .app.tar.gz 版：保留可执行位和符号链接
+          tar -czf "$base.app.tar.gz" -C dist "${{ env.APP_NAME }}.app" LICENSE README.md
+          rm -rf dist "${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP_NAME }}-darwin-${{ matrix.arch }}
-          path: ${{ env.APP_NAME }}-darwin-${{ matrix.arch }}.zip
+          name: ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}.zip
+            ${{ env.APP_NAME }}-${{ matrix.os }}-${{ matrix.arch }}.app.tar.gz
           if-no-files-found: error
 
   release:
@@ -176,5 +218,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+          body_path: .github/release-notes.md
           generate_release_notes: true
           draft: false
