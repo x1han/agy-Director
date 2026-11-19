@@ -50,7 +50,7 @@ agy-Director 的做法是：启动前探测出可用的本地代理通道，以*
 
 **它不改你的系统**：不写注册表代理、不改全局环境变量、不碰 `.bashrc` / `.zshrc` / `.profile`、不改桌面快捷方式。所有代理配置只作用在被启动的那个进程及其子进程上。
 
-> 更细的原理、构建方式、日志位置等在 [`docs/agy-Director-technical-details.md`](docs/agy-Director-technical-details.md)。
+> 更细的原理、构建方式、日志位置等在 [技术细节文档](https://github.com/x1han/agy-Director/blob/master/docs/agy-Director-technical-details.md)。
 
 ---
 

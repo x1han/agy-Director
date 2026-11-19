@@ -99,7 +99,11 @@ jobs:
           mkdir -p "$pkg"
           # ⚠️ 用 cp 而不是 mv —— mv 会把二进制挪走，后面就没得 cp 回来了。
           cp "$base" "$pkg/${{ env.APP_NAME }}"
+          # ⚠️ assets/ 也要进包 —— README 顶部有 <img src="assets/...">，
+          # 少了这个目录，README 里的 logo 就是个裂图。
           cp LICENSE README.md "$pkg/"
+          mkdir -p "$pkg/assets"
+          cp assets/agy-Director-tile.svg "$pkg/assets/"
           tar -czf "$base.tar.gz" -C "$work" "$base"
           rm -rf "$work"
 
@@ -115,7 +119,11 @@ jobs:
           pkg="${base}-pkg"
           mkdir -p "$pkg"
           cp "$base.exe" "$pkg/${{ env.APP_NAME }}.exe"
+          # ⚠️ assets/ 也要进包 —— README 顶部有 <img src="assets/...">，
+          # 少了这个目录，README 里的 logo 就是个裂图。
           cp LICENSE README.md "$pkg/"
+          mkdir -p "$pkg/assets"
+          cp assets/agy-Director-tile.svg "$pkg/assets/"
           # ubuntu-latest 预装了 zip，但不显式装一次更保险
           # （万一镜像变了就少了产物，而不是整个 job 挂掉）。
           if ! command -v zip >/dev/null 2>&1; then
@@ -206,10 +214,14 @@ jobs:
           set -euo pipefail
           base="${{ env.APP_NAME }}-macos-${{ matrix.arch }}"
           cp LICENSE README.md dist/
+          # ⚠️ assets/ 也要进包 —— README 顶部有 <img src="assets/...">，
+          # 少了这个目录，README 里的 logo 就是个裂图。
+          mkdir -p dist/assets
+          cp assets/agy-Director-tile.svg dist/assets/
           # zip 版：解压得到 .app
-          (cd dist && zip -qry "../$base.zip" "${{ env.APP_NAME }}.app" LICENSE README.md)
+          (cd dist && zip -qry "../$base.zip" "${{ env.APP_NAME }}.app" LICENSE README.md assets)
           # .app.tar.gz 版：保留可执行位和符号链接
-          tar -czf "$base.app.tar.gz" -C dist "${{ env.APP_NAME }}.app" LICENSE README.md
+          tar -czf "$base.app.tar.gz" -C dist "${{ env.APP_NAME }}.app" LICENSE README.md assets
           rm -rf dist "${{ env.APP_NAME }}-macos-${{ matrix.arch }}"
 
       - name: 上传产物
