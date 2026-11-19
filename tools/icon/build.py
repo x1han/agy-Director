@@ -336,7 +336,7 @@ def build_ico(dibs, sizes):
     return bytes(ico)
 
 
-def build_png(rgba, size):
+def build_png(rgba, size, height=None):
     """把 RGBA 像素编码成 PNG 字节流。
 
     PNG 格式（简化）：
@@ -347,12 +347,17 @@ def build_png(rgba, size):
 
     滤波用 0（None）—— 体积大一点，但省事且绝对正确。
     macOS 的 sips/iconutil 只认格式，不在乎压缩率。
+
+    size 是宽度；height 省略时按正方形处理。
     """
     import zlib
 
+    if height is None:
+        height = size
+
     raw = bytearray()
     stride = size * 4
-    for row in range(size):
+    for row in range(height):
         raw.append(0)  # 滤波类型 0 = None
         raw += rgba[row * stride:(row + 1) * stride]
 
@@ -360,7 +365,7 @@ def build_png(rgba, size):
         out = struct.pack(">I", len(data)) + tag + data
         return out + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
-    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+    ihdr = struct.pack(">IIBBBBB", size, height, 8, 6, 0, 0, 0)
     return (b"\x89PNG\r\n\x1a\n"
             + chunk(b"IHDR", ihdr)
             + chunk(b"IDAT", zlib.compress(bytes(raw), 9))

@@ -35,7 +35,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SVG="assets/agy-Director-tile.svg"
+LOGO="assets/agy-Director-logo.svg"
 ICO_FULL="assets/agy-Director.ico"
+PNG_FULL="assets/agy-Director.png"
 ICO_SLIM="$(mktemp -d)/agy-Director-slim.ico"
 OUT_DIR="cmd/agy-director"
 
@@ -47,8 +49,14 @@ if [ ! -f "$SVG" ]; then
     exit 1
 fi
 
+echo "==> 生成 tile SVG（白底 + 黑标，标志占 90%）"
+python tools/icon/tile.py "$LOGO" "$SVG" --bg "#FFFFFF" --scale 0.90
+
 echo "==> 生成完整 ICO（16..256）"
 python tools/icon/build.py "$SVG" "$ICO_FULL" --sizes 16,24,32,48,64,128,256
+
+echo "==> 生成 macOS iconset 源图（1024×1024 PNG）"
+python tools/icon/build.py "$SVG" "$PNG_FULL" --png --png-size 1024
 
 echo "==> 生成精简 ICO（16..128，用于 .syso）"
 python tools/icon/build.py "$SVG" "$ICO_SLIM" --sizes 16,24,32,48,64,128

@@ -2,7 +2,7 @@
 """从产品 logo 生成「白色圆角矩形 + 黑色图标」的 tile SVG。
 
 用法:
-    python tools/icon/tile.py <源.svg> <输出.svg> [--radius 40] [--scale 0.60]
+    python tools/icon/tile.py <源.svg> <输出.svg> [--radius 40] [--scale 0.90] [--bg #FFFFFF] [--fg #202124]
 
 背景:
     用户的图标要求是「白色底、黑色图标的圆角矩形」。
@@ -175,14 +175,18 @@ def main():
     ap.add_argument("src")
     ap.add_argument("out")
     ap.add_argument("--radius", type=float, default=40.0, help="圆角矩形的 rx")
-    ap.add_argument("--scale", type=float, default=0.60, help="图标占 tile 高度的比例")
+    ap.add_argument("--scale", type=float, default=0.90, help="图标占 tile 高度的比例")
     ap.add_argument("--bg", default="#FFFFFF", help="底色")
+    ap.add_argument("--fg", default=None,
+                    help="图标本身的颜色（默认沿用源 SVG 的填充色）")
     args = ap.parse_args()
 
     with open(args.src, "r", encoding="utf-8") as f:
         svg_text = f.read()
 
     paths, fill, viewbox = extract_body(svg_text)
+    if args.fg:
+        fill = args.fg
     vx, vy, vw, vh = parse_viewbox(viewbox)
 
     # 所有 path 的包围盒的并集
@@ -219,9 +223,15 @@ def main():
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vx} {vy} {vw} {vh}" '
         f'width="{vw}" height="{vh}">'
     )
+    # ⚠️ 必须自己声明 fill ——
+    # 源 SVG 里 path 写的是 class="st0"，颜色定义在 <style> 里的
+    # .st0{fill:#202124}。我们没把那个 <style> 搬过来，
+    # path 就退回默认的黑色 —— --fg 参数会被无声忽略。
+    #
+    # 所以这里把 fill 直接写进 <g>，让所有 path 继承它。
     out.append(f'  <rect x="{vx}" y="{vy}" width="{vw}" height="{vh}" '
                f'rx="{args.radius}" ry="{args.radius}" fill="{args.bg}"/>')
-    out.append(f'  <g transform="translate({tx:.4f},{ty:.4f}) scale({s:.6f})">')
+    out.append(f'  <g fill="{fill}" transform="translate({tx:.4f},{ty:.4f}) scale({s:.6f})">')
     for p in paths:
         out.append("    " + p)
     out.append("  </g>")
