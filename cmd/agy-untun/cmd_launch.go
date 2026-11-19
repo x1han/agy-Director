@@ -16,6 +16,16 @@ import (
 	"github.com/user/agy-untun/internal/shellenv"
 )
 
+// 启动桌面版时追加的 CDP 调试参数。
+//
+// 详见 desktopDebugArgs 的注释。
+const (
+	// debugPortArg 让 Chromium 随机挑一个空闲端口开 CDP。
+	debugPortArg = "--remote-debugging-port=0"
+	// debugAddressArg 把 CDP 端口绑在回环地址上。
+	debugAddressArg = "--remote-debugging-address=127.0.0.1"
+)
+
 // launchOptions 是 launch 子命令的解析结果。
 type launchOptions struct {
 	forceIDE bool
@@ -186,6 +196,7 @@ func runLaunch(args []string) error {
 		"--proxy-server="+ch.URL(),
 		"--proxy-bypass-list="+chromiumBypassList(*ch),
 	)
+	launchArgs = append(launchArgs, desktopDebugArgs(opts.passArgs)...)
 
 	if _, err := launcher.Launch(context.Background(), launcher.Options{
 		Channel:  *ch,
@@ -271,6 +282,81 @@ func chromiumBypassList(ch channel.Channel) string {
 	}
 
 	return strings.Join(out, ";")
+}
+
+// desktopDebugArgs 返回让 Antigravity 桌面版开启本地 CDP 调试端口的参数。
+//
+// ── 为什么必须传 ────────────────────────────────────────────────────
+//
+// Antigravity 2.33+ 的 dist/main.js 里只有：
+//
+//	if (!electron_1.app.commandLine.hasSwitch('remote-debugging-port')) {
+//	    electron_1.app.commandLine.appendSwitch('remote-debugging-port', '0');
+//	}
+//
+// 注意它**只是判断有没有这个开关**，没有在缺省时自己打开
+// （实测当前 app.asar：有 hasSwitch 调用，没有 appendSwitch 调用）。
+// 所以必须由启动方显式传，否则：
+//
+//   - CDP 端口不开
+//   - %APPDATA%\antigravity\DevToolsActivePort 不生成
+//   - 依赖 CDP 的插件（内联面板等）连不上，报
+//     "Host started without --remote-debugging-port=0"
+//
+// ── 参数含义 ────────────────────────────────────────────────────────
+//
+// --remote-debugging-port=0 的 0 表示"由 Chromium 随机挑一个空闲端口"，
+// 真实端口号写进 DevToolsActivePort 文件，不是真的监听 0 号端口。
+//
+// --remote-debugging-address=127.0.0.1 把调试端口绑在回环上，
+// 只有本机能连。
+//
+// ── 顺带修好的东西 ──────────────────────────────────────────────────
+//
+// launcher.CheckRunning() 靠读 DevToolsActivePort + 连 CDP 端点来判断
+// "桌面版是否在运行"。我们启动的实例不开 CDP → 那个文件永不生成 →
+// 永远判定"没在运行" → cmd_launch.go 里的单实例守卫形同虚设，
+// Electron 的 requestSingleInstanceLock() 会把 argv 转发给旧实例后退出，
+// 代理环境变量就丢了（正是那个守卫想防的情况）。
+// 开了 CDP 之后，这个判断自然恢复正确。
+//
+// ── 去重 ────────────────────────────────────────────────────────────
+//
+// 用户可能自己在 "--" 之后传了调试端口。Chromium 取最后一个同名开关，
+// 重复传虽然不出错，但命令行会变得难以解释，
+// 而且用户传的具体端口会被我们追加的 0 覆盖（顺序在后）。
+// 所以已存在的那个不重复追加。
+func desktopDebugArgs(passArgs []string) []string {
+	hasPort := hasSwitchPrefix(passArgs, "--remote-debugging-port")
+	hasAddr := hasSwitchPrefix(passArgs, "--remote-debugging-address")
+
+	var out []string
+	if !hasPort {
+		out = append(out, debugPortArg)
+	}
+	if !hasAddr {
+		out = append(out, debugAddressArg)
+	}
+	return out
+}
+
+// hasSwitchPrefix 判断参数列表里是否已有某个 Chromium 开关。
+//
+// 同时接受两种写法：
+//
+//	--remote-debugging-port        （值在下一个 argv 里）
+//	--remote-debugging-port=9222   （值用 = 挂上）
+//
+// 只比前缀，所以 "--remote-debugging-port" 也会匹配到
+// "--remote-debugging-port-foo" 这种（Chromium 没有这种开关，
+// 不构成实际问题）。
+func hasSwitchPrefix(args []string, name string) bool {
+	for _, a := range args {
+		if a == name || strings.HasPrefix(a, name+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyAll 并发验证所有候选通道，返回可用的那些。

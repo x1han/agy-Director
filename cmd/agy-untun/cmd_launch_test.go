@@ -110,3 +110,103 @@ func hasBypassEntry(list, entry string) bool {
 	}
 	return false
 }
+
+// TestDesktopDebugArgs 验证 CDP 调试参数的追加逻辑。
+//
+// 背景：Antigravity 2.33+ 的 dist/main.js 只判断
+// hasSwitch('remote-debugging-port')，**没有**在缺省时 appendSwitch 打开，
+// 所以必须由启动方显式传。不传则 DevToolsActivePort 不生成，
+// 依赖 CDP 的插件（内联面板）挂不上。
+//
+// 关键点：**不重复追加**。用户自己传了 --remote-debugging-port=9222 时，
+// 我们不能再塞一个 --remote-debugging-port=0 —— Chromium 取最后一个，
+// 用户的具体端口会被我们的 0 覆盖掉。
+//
+// 本测试全是 Chromium 开关字符串，不涉及任何域名。
+func TestDesktopDebugArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		passArgs []string
+		want     []string // 必须出现
+		notWant  []string // 不应出现
+	}{
+		{
+			name:     "没传过 → 两个都补上",
+			passArgs: nil,
+			want:     []string{debugPortArg, debugAddressArg},
+		},
+		{
+			name:     "已有端口 → 只补地址",
+			passArgs: []string{"--remote-debugging-port=9222"},
+			want:     []string{debugAddressArg},
+			notWant:  []string{debugPortArg},
+		},
+		{
+			name:     "已有地址 → 只补端口",
+			passArgs: []string{"--remote-debugging-address=127.0.0.1"},
+			want:     []string{debugPortArg},
+			notWant:  []string{debugAddressArg},
+		},
+		{
+			name: "两个都有 → 都不补",
+			passArgs: []string{
+				"--remote-debugging-port=9222",
+				"--remote-debugging-address=127.0.0.1",
+			},
+			notWant: []string{debugPortArg, debugAddressArg},
+		},
+		{
+			// 空格写法：值在下一个 argv 里，不带 "="。
+			name:     "空格写法的端口 → 只补地址",
+			passArgs: []string{"--remote-debugging-port", "9222"},
+			want:     []string{debugAddressArg},
+			notWant:  []string{debugPortArg},
+		},
+		{
+			// 别的参数不能被误判成调试开关。
+			name:     "无关参数 → 两个都补上",
+			passArgs: []string{"--proxy-server=http://127.0.0.1:10808"},
+			want:     []string{debugPortArg, debugAddressArg},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := desktopDebugArgs(tt.passArgs)
+
+			for _, w := range tt.want {
+				if !hasArg(got, w) {
+					t.Errorf("缺少 %q，实际: %v", w, got)
+				}
+			}
+			for _, w := range tt.notWant {
+				if hasArg(got, w) {
+					t.Errorf("不该出现 %q，实际: %v", w, got)
+				}
+			}
+		})
+	}
+}
+
+// hasArg 判断参数列表里是否**恰好**有这一项（不是子串匹配）。
+func hasArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDesktopDebugArgsOnlyAddsMissing 确认两个开关是**各自独立**判断的。
+//
+// 即：只缺一个时，只补那一个，不多不少。
+func TestDesktopDebugArgsOnlyAddsMissing(t *testing.T) {
+	got := desktopDebugArgs([]string{"--remote-debugging-port=9222"})
+	if len(got) != 1 {
+		t.Fatalf("应当只补 1 个参数，实际补了 %d 个: %v", len(got), got)
+	}
+	if got[0] != debugAddressArg {
+		t.Errorf("补的应该是 %q，实际: %q", debugAddressArg, got[0])
+	}
+}
