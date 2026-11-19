@@ -60,17 +60,30 @@ if (!electron_1.app.commandLine.hasSwitch('remote-debugging-port')) {
 
 ## 日志
 
-整个运行过程都会写日志：
+TUI 运行时（`cmd_tui.go` 里调 `logging.Setup`）会写日志：
 
 - **stderr** —— 实时输出。TUI 渲染期间会临时静音（Windows 控制台里 stdout/stderr 同屏，日志插进来会把界面搅乱），TUI 退出后恢复。
-- **文件** —— 始终写入 `os.UserConfigDir()/agy-Director/logs/agy-director.log`。
+- **文件** —— 始终写入 `<用户配置目录>/agy-Director/logs/agy-director.log`。
 
-| 平台 | 配置与日志目录 |
+日志目录用 `os.UserConfigDir()`（`internal/logging/logging.go:89`），各平台实际路径：
+
+| 平台 | 日志文件 |
 |---|---|
-| Windows | `%APPDATA%\agy-Director\` |
-| macOS / Linux | `$XDG_CONFIG_HOME/agy-Director/`（没设就是 `~/.config/agy-Director/`） |
+| Windows | `%APPDATA%\agy-Director\logs\agy-director.log` |
+| macOS | `~/Library/Application Support/agy-Director/logs\agy-director.log` |
+| Linux | `$XDG_CONFIG_HOME/agy-Director/logs/agy-director.log`（没设就是 `~/.config/agy-Director/logs/`） |
+
+> ⚠️ 注意 macOS 和其它平台不一样：`os.UserConfigDir()` 在 darwin 上返回
+> `$HOME/Library/Application Support`（不是 `~/.config`）。
+> 但**通道配置文件**（`channels.json`）走的是 `internal/config/config.go`，
+> 那里用的是 `XDG_CONFIG_HOME` / `~/.config` —— 所以 macOS 上
+> 配置在 `~/.config/agy-Director/`，日志在
+> `~/Library/Application Support/agy-Director/logs/`，两个地方不一样。
 
 > 从 Finder 双击 `.app` 时，macOS 会把 stdout/stderr 接到 `/dev/null` —— stderr 里的日志会**全部丢失**。所以文件日志是硬需求，不是可选项。
+
+`doctor` / `channels` 等非 TUI 命令**不写文件日志**（它们不调 `logging.Setup`），
+只在 stderr 输出 —— 本来就是排查用的，直接看终端即可。
 
 ---
 

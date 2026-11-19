@@ -170,16 +170,19 @@ agy-Director channels test v2rayN
 
 ### 先看日志
 
-程序整个运行过程都在写日志，**每次运行都有**：
+程序运行 TUI 时会写日志文件，**每次 TUI 运行都会留一份**：
 
 | 平台 | 日志文件 |
 |---|---|
 | Windows | `%APPDATA%\agy-Director\logs\agy-director.log` |
-| macOS / Linux | `~/.config/agy-Director/logs/agy-director.log` |
+| macOS | `~/Library/Application Support/agy-Director/logs/agy-director.log` |
+| Linux | `~/.config/agy-Director/logs/agy-director.log` |
 
 日志里能看到它扫了什么、选了什么通道、启动时注入了哪些环境变量。
 
 TUI 运行期间 stderr 是静音的（日志插进界面会把界面搅乱），但**文件日志一直在写**。
+
+> `doctor` / `channels` 这类非 TUI 命令**不写文件日志**，只在 stderr 输出 —— 它们本来就是排查用的，直接看终端就行。
 
 ### 跑一下诊断
 

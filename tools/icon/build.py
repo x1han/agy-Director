@@ -2,18 +2,25 @@
 """从 SVG 生成多尺寸 Windows ICO。
 
 用法:
-    python tools/icon/build.py <输入.svg> <输出.ico> [--tile] [--radius N]
+    python tools/icon/build.py <输入.svg> <输出.ico> [--sizes 16,24,...]
+    python tools/icon/build.py <输入.svg> <输出.png> --png --png-size 1024
 
 流程:
-    1. 用无头 Chrome 把 SVG 渲染成透明背景的 512x512 PNG
-    2. 逐尺寸缩放，打包成 32bpp truecolor ICO
+    1. 每个目标尺寸**单独**用无头 Chrome 渲染成 size*4 的 PNG
+       （不是渲染一张大图再缩 —— 小尺寸需要源图在该尺寸下的
+       准确光栅化，从大图降采样会抹掉细线）
+    2. 用面积平均（预乘 alpha）降采样到目标尺寸
+    3. 小尺寸存成 32bpp DIB 帧；>= --png-frame-size 的存成 PNG 帧
+
+为什么 256 帧用 PNG：
+    256×256 的未压缩 DIB 有 270KB，PNG 只要 6KB（差 40 倍，画质无损）。
+    Windows 自己的图标就是这个混合格式（小尺寸 DIB + 256 尺寸 PNG）。
 
 为什么不用 Python 的 PIL/Cairo:
-    本机没有装，且引入额外依赖不划算；Chrome 已在系统里。
+    引入额外依赖不划算；Chrome 已在系统里。
 """
 
 import argparse
-import json
 import os
 import shutil
 import struct
@@ -328,7 +335,7 @@ def build_ico(frames, sizes):
 
     ── 为什么 256 帧要用 PNG ─────────────────────────────────────────
     256×256 的 32bpp DIB 是 270KB（未压缩 BGRA），光这一帧就撑爆
-    .syso。同一张图存成 PNG 只要 6.7KB —— 差 40 倍，画质无损。
+    .syso。同一张图存成 PNG 只要 6.1KB —— 差 40 倍，画质无损。
 
     Windows 自己就是这么干的：explorer.exe / cmd.exe / notepad.exe
     的图标都是"小尺寸 DIB + 256 尺寸 PNG"的混合格式。
@@ -365,10 +372,19 @@ def build_ico(frames, sizes):
         ico[e + 1] = h
         ico[e + 2] = 0        # colorCount
         ico[e + 3] = 0        # reserved
-        ico[e + 4:6] = struct.pack("<H", 1)   # planes
-        ico[e + 6:8] = struct.pack("<H", 32 if is_png else 0)
-        ico[e + 8:12] = struct.pack("<I", len(data))
-        ico[e + 12:16] = struct.pack("<I", offset)
+        # ⚠️ 切片必须写成 e+4:e+6 这样的**完整表达式**。
+        # 写成 e+4:6 的话，Python 解析成"从 e+4 到 6"——
+        # 终点 6 小于起点（e=6 时起点 10），是**倒挂切片**，
+        # 而倒挂切片的赋值语义是**插入**而不是替换，
+        # 结果是每帧往文件里多插 12 字节（实测 7 帧多 84 字节尾部垃圾）。
+        #
+        # 值当时看着是对的（插入位置恰好把字节推到了正确偏移），
+        # 但那是巧合 —— 一旦有人按下面"两趟写入"的注释把它合回
+        # 一趟，帧数据就会错位。所以这里必须是替换语义。
+        ico[e + 4:e + 6] = struct.pack("<H", 1)   # planes
+        ico[e + 6:e + 8] = struct.pack("<H", 32 if is_png else 0)
+        ico[e + 8:e + 12] = struct.pack("<I", len(data))
+        ico[e + 12:e + 16] = struct.pack("<I", offset)
         offset += len(data)
 
     offset = 6 + 16 * len(frames)
@@ -482,9 +498,45 @@ def main():
                 print(f"  {size:>4}px  DIB 帧   {len(data):>7} 字节")
 
     ico = build_ico(frames, sizes)
+    verify_ico(ico, sizes)
     with open(args.out, "wb") as f:
         f.write(ico)
         print(f"已写入 {args.out} ({len(ico)} 字节, {len(sizes)} 个尺寸)")
+
+
+def verify_ico(ico, sizes):
+    """自检：把生成的 ICO 重新解析一遍，确认结构自洽。
+
+    为什么要有这一步：
+    build_ico 里的 entry 表切片如果写成倒挂形式（e+4:6），
+    赋值语义会变成"插入"而不是"替换" —— 字节值看着是对的
+    （插入位置恰好把数据推到了正确偏移），但文件里会多出
+    每帧 12 字节的尾部垃圾，而且一旦有人把两趟写入合回一趟，
+    帧数据就会直接错位。
+
+    这种 bug 从肉眼看输出是发现不了的，只能靠断言。
+    """
+    n = struct.unpack_from("<H", ico, 4)[0]
+    if n != len(sizes):
+        sys.exit(f"❌ 帧数不对：目录说 {n} 帧，实际 {len(sizes)} 个")
+
+    expected = 6 + 16 * n
+    for i in range(n):
+        e = 6 + 16 * i
+        w = ico[e] or 256
+        h = ico[e + 1] or 256
+        if w != sizes[i] or h != sizes[i]:
+            sys.exit(f"❌ 第 {i} 帧尺寸不对：目录说 {w}x{h}，应为 {sizes[i]}")
+        size = struct.unpack_from("<I", ico, e + 8)[0]
+        off = struct.unpack_from("<I", ico, e + 12)[0]
+        if off != expected:
+            sys.exit(f"❌ 第 {i} 帧偏移不对：目录说 {off}，应为 {expected}")
+        expected += size
+
+    if len(ico) != expected:
+        sys.exit(f"❌ 文件长度不对：实际 {len(ico)}，按目录算应为 {expected}"
+                 f"（多 {len(ico)-expected} 字节 —— entry 表的切片边界写错了？）")
+    print(f"  自检通过：{n} 帧，偏移与长度自洽（{len(ico)} 字节）")
 
 
 if __name__ == "__main__":
