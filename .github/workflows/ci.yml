@@ -21,16 +21,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-          cache: true
 
+      # gofmt 检查。
+      #
+      # ⚠️ 两个坑：
+      #  1. Windows runner 的默认 shell 是 pwsh，POSIX 语法（[ -n "$x" ]）直接 ParserError。
+      #  2. `gofmt -l` 无论有没有输出，退出码都是 0 —— 不能靠退出码判断。
+      #
+      # 所以改成：让 go fmt 就地格式化，再用 git diff 检查工作区是否被改动。
+      # git diff --exit-code 在三种 shell 下行为一致。
       - name: gofmt 检查
         run: |
-          unformatted="$(gofmt -l cmd internal)"
-          if [ -n "$unformatted" ]; then
-            echo "以下文件未格式化："
-            echo "$unformatted"
-            exit 1
-          fi
+          go fmt ./cmd/... ./internal/...
+          git diff --exit-code -- cmd internal
 
       - name: go vet
         run: go vet ./cmd/... ./internal/...
