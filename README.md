@@ -23,19 +23,24 @@ Antigravity 的网络请求由 Go 后端 `language_server`（桌面版 `resource
 
 ### 为什么需要 CDP 调试参数
 
-Antigravity 2.33+ 的 `dist/main.js` 里只有：
+Antigravity 2.33+ 的 `dist/main.js`（`app.asar` 内）里只有：
 
 ```js
+const activePortFile = getActivePortFilePath();
 if (!electron_1.app.commandLine.hasSwitch('remote-debugging-port')) {
-    electron_1.app.commandLine.appendSwitch('remote-debugging-port', '0');
+    removeStaleActivePortFile(activePortFile);
 }
 ```
 
-它**只判断有没有这个开关，不在缺省时自己打开**。不传的话：
+它**只判断有没有这个开关，从不自己打开** —— 整个 `app.asar` 里 `appendSwitch('remote-debugging-port'` 零命中（`appendSwitch` 共 8 处，都是 headless / disable-features 之类）。
+
+不传的话：
 
 - CDP 端口不开
 - `%APPDATA%\antigravity\DevToolsActivePort` 不生成
-- 依赖 CDP 的插件（内联面板等）连不上，报 `Host started without --remote-debugging-port=0`
+- 依赖 CDP 的插件（内联状态条等）连不上，报 `Host started without --remote-debugging-port=0`
+
+> 顺带说明：插件自己有个自愈机制，会扫描桌面 / 开始菜单 / 任务栏里的 Antigravity 快捷方式并补上这两个参数。所以**从开始菜单启动 Antigravity 时插件一直能用** —— 那不是 Antigravity 自带参数，是快捷方式被插件改写过。但插件修不了直接 `exec` 启动的进程（快捷方式不参与那条路），所以用 agy-untun 启动时必须自己带。
 
 顺带地，agy-untun 自己的"桌面版是否在运行"判断也依赖 `DevToolsActivePort` + CDP 端点可达；开了 CDP 之后这个判断才正确（否则永远判定为"没在运行"，单实例守卫会失效，Electron 把 argv 转发给旧实例后退出，代理环境变量就丢了）。
 

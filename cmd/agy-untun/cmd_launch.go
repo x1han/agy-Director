@@ -288,20 +288,37 @@ func chromiumBypassList(ch channel.Channel) string {
 //
 // ── 为什么必须传 ────────────────────────────────────────────────────
 //
-// Antigravity 2.33+ 的 dist/main.js 里只有：
+// Antigravity 2.33+ 的 dist/main.js（app.asar 内）里只有：
 //
+//	const activePortFile = getActivePortFilePath();
 //	if (!electron_1.app.commandLine.hasSwitch('remote-debugging-port')) {
-//	    electron_1.app.commandLine.appendSwitch('remote-debugging-port', '0');
+//	    removeStaleActivePortFile(activePortFile);
 //	}
 //
-// 注意它**只是判断有没有这个开关**，没有在缺省时自己打开
-// （实测当前 app.asar：有 hasSwitch 调用，没有 appendSwitch 调用）。
+// 注意它**只是判断有没有这个开关，从不自己打开** —— 整个 app.asar 里
+// appendSwitch('remote-debugging-port') 零命中
+// （appendSwitch 共 8 处，都是 headless / disable-features 之类）。
 // 所以必须由启动方显式传，否则：
 //
 //   - CDP 端口不开
 //   - %APPDATA%\antigravity\DevToolsActivePort 不生成
-//   - 依赖 CDP 的插件（内联面板等）连不上，报
+//   - 依赖 CDP 的插件（内联状态条等）连不上，报
 //     "Host started without --remote-debugging-port=0"
+//
+// ── 容易误判的地方 ──────────────────────────────────────────────────
+//
+// 插件的"侧边面板"（对话旁的侧栏）**不需要** CDP：它走 sidecar SDK +
+// 语言服务器 gRPC（sidecars/panel/main.mjs 里 ANTIGRAVITY_SIDECAR_WEB_PORT
+// 分支）。只有"内联状态条"（输入框下方那条）必须走 CDP，
+// 而且它的 CDP 发现（compat/runtime-ui.mjs 的 discoverTargets）只读
+// DevToolsActivePort → /json/list，**没有任何 fallback**。
+//
+// 插件自己有个自愈机制：会扫桌面 / 开始菜单 / 任务栏里的 Antigravity
+// 快捷方式并补上这两个参数（compat/launch-config.mjs 的
+// ensureDesktopLaunchConfig）。所以**从开始菜单启动 Antigravity 时插件
+// 一直能用** —— 那不是 Antigravity 自带参数，是快捷方式被插件改写过。
+// 但插件修不了直接 exec 启动的进程（快捷方式不参与那条路），
+// 这正是我们要自己带参数的原因。
 //
 // ── 参数含义 ────────────────────────────────────────────────────────
 //
