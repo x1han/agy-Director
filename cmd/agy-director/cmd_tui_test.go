@@ -207,3 +207,34 @@ func TestWaitForEnterNoWaitReturnsImmediately(t *testing.T) {
 		t.Errorf("--no-wait 应该立刻返回，实际等了 %v", elapsed)
 	}
 }
+
+// 生产默认值就是 3 秒 —— 用真实的 waitTimeout 跑一遍，
+// 确认默认行为真的是"等 3 秒自动关"。
+func TestWaitForEnterDefaultIsThreeSeconds(t *testing.T) {
+	oldStdin := os.Stdin
+	oldNoWait, oldTimeout := noWait, waitTimeout
+	defer func() {
+		os.Stdin = oldStdin
+		noWait, waitTimeout = oldNoWait, oldTimeout
+	}()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("建管道失败: %v", err)
+	}
+	defer w.Close()
+	os.Stdin = r
+	noWait = false
+	waitTimeout = 3 // 生产默认值
+
+	start := time.Now()
+	waitForEnter()
+	elapsed := time.Since(start)
+
+	if elapsed < 2800*time.Millisecond {
+		t.Errorf("应该等满 3 秒，实际只等了 %v", elapsed)
+	}
+	if elapsed > 4500*time.Millisecond {
+		t.Errorf("等太久了：%v", elapsed)
+	}
+}
