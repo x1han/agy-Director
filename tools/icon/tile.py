@@ -2,7 +2,7 @@
 """从产品 logo 生成「白色圆角矩形 + 黑色图标」的 tile SVG。
 
 用法:
-    python tools/icon/tile.py <源.svg> <输出.svg> [--radius 40] [--scale 0.90] [--bg #FFFFFF] [--fg #202124]
+    python tools/icon/tile.py <源.svg> <输出.svg> [--radius 40] [--scale 0.62] [--bg #FFFFFF] [--fg #202124]
 
 背景:
     用户的图标要求是「白色底、黑色图标的圆角矩形」。
@@ -21,6 +21,31 @@
        做平移缩放，把图标居中放进 tile。
        不改写 path 的坐标：Illustrator 导出的路径混着绝对与相对指令，
        手改容易错；transform 交给渲染器算最稳。
+
+────────────────────────────────────────────────────────────────────────
+--scale 默认值为什么是 0.62（别改大）
+────────────────────────────────────────────────────────────────────────
+--scale 是"图形占 tile 高度的比例"。逐像素比对用户桌面截图上的两个
+图标（都是 72 物理像素的白底圆角块）：
+
+    旧的「Agy启动器」   图形占块高 44px (61%)   眼条 6px   墨迹 382
+    --scale 0.90 的     图形占块高 63px (88%)   眼条 9px   墨迹 785
+
+图形高度差 43%、眼条粗 50% —— 这就是"图标又胖又糊"的全部来源。
+**不是被放大糊的，是图形本身就画得太大。**
+
+    --scale 0.62  ->  scale(0.842264)  ->  图形占块高 61%   ← 正确
+    --scale 0.90  ->  scale(1.222642)  ->  图形占块高 88%   ← 退化
+
+v1.4.0 曾把它从 0.60 提到 0.90，理由是"标志放大到 90%，形象更清楚"。
+方向反了：白底方块里塞一个几乎顶到边的大黑图形，小尺寸下两根
+眼条会连成一片，整个标志糊成一坨。
+
+⚠️ 改 --scale 时必须同步检查 build.py 的光学加粗：
+   加粗量 = target * viewBox高 / (scale系数 * size) - 基线笔画宽，
+   里面的 scale系数 就是本脚本算出来的那个 s（见 build.py 的
+   parse_tile_scale）。build.py 会自动从 SVG 里读它，
+   所以只要这里改对，那里不用动。
 """
 
 import argparse
@@ -175,7 +200,7 @@ def main():
     ap.add_argument("src")
     ap.add_argument("out")
     ap.add_argument("--radius", type=float, default=40.0, help="圆角矩形的 rx")
-    ap.add_argument("--scale", type=float, default=0.90, help="图标占 tile 高度的比例")
+    ap.add_argument("--scale", type=float, default=0.62, help="图标占 tile 高度的比例")
     ap.add_argument("--bg", default="#FFFFFF", help="底色")
     ap.add_argument("--fg", default=None,
                     help="图标本身的颜色（默认沿用源 SVG 的填充色）")

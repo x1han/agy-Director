@@ -106,8 +106,12 @@ if command -v python3 >/dev/null 2>&1 && \
     trap 'rm -rf "$tmp"' EXIT
 
     # 用 python3（不是 python）—— macOS 上没有 python 这个别名。
+    #
+    # --scale 0.62 是**有讲究的**：图形占 tile 高度 61%。
+    # 别改大 —— 0.90 会让图形占 88%，几乎顶到白块的边，
+    # 小尺寸下两个眼条会连成一片。详见 tools/icon/tile.py 的模块文档。
     python3 tools/icon/tile.py "$LOGO" "$tmp/tile.svg" \
-        --bg "#FFFFFF" --scale 0.90
+        --bg "#FFFFFF" --scale 0.62
     python3 tools/icon/build.py "$tmp/tile.svg" "$ICNS_SRC" \
         --iconset "$ICONSET"
 else

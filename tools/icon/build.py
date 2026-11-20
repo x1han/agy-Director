@@ -41,12 +41,18 @@ Windows 到底选哪一帧？（实测，别猜）
   1. 尺寸阶梯必须**密**。Windows 只在"恰好命中"时才不缩放。
      我们原来只做 16/24/32/48/64/128/256，在 150% 缩放的屏幕上，
      48 逻辑像素的图标要 72 物理像素 → 只能命中 64 帧 → 放大 1.13 倍。
-     这就是"图标发糊"的真正原因（用户 150% 屏幕上的实测截图，
-     逐像素比对确认就是我们的 64 帧被放大到 72，IoU 0.966）。
      加一条 72 的帧就能精确命中，误差归零。
 
   2. **必须提供 256 帧**，否则请求 256 时只能拿 128 放大 2 倍。
      （Windows 自带的 explorer.exe 也是 16..64 + 256 PNG。）
+
+现在这套阶梯用同一条探针实测：请求 16/20/24/32/40/48/60/64/72/96/
+128/144/192/256，**每一档都精确命中同尺寸的帧**，一次缩放都没有。
+
+⚠️ 但阶梯密度只解决**缩放**问题。
+   用户看到"图标又胖又糊"时，真正的元凶是图形在 tile 里画得太大
+   （图形占块高 88% 而不是 61%）—— 见下面"光学尺寸"一节末尾的
+   说明，以及 tools/icon/tile.py 的 --scale 默认值。
 
 为什么 125% / 150% / 175% 的常见缩放都要覆盖：
     资源管理器的图标槽位（逻辑像素）常见有 16/20/24/32/40/48/64/96/128。
@@ -64,13 +70,15 @@ Windows 到底选哪一帧？（实测，别猜）
 ────────────────────────────────────────────────────────────────────────
 小尺寸的笔画要加粗（光学尺寸）
 ────────────────────────────────────────────────────────────────────────
-logo 的天线笔画在 180 单位的 viewBox 里宽 10 单位。折算成像素：
+logo 里最细的笔画是**拱形的两条腿**，在 180 单位的 viewBox 里宽
+10.5 单位（天线/眼睛是 20 单位的圆头矩形，明显更粗）。
 
-    16px -> 0.89 px   （亚像素，永远渲染成一团灰）
-    24px -> 1.33 px
-    32px -> 1.78 px
-    48px -> 2.67 px
-    64px -> 3.56 px
+    折算成像素（tile 的 transform scale = 0.842，即 --scale 0.62）：
+
+        16px -> 0.79 px   （亚像素，永远渲染成一团灰）
+        24px -> 1.18 px
+        32px -> 1.57 px
+        48px -> 2.36 px   （原生就够，不用加粗）
 
 小于约 1.5px 的笔画不管用什么重采样算法都糊——它只能变成
 一个部分覆盖的像素。所以小尺寸必须用**独立的、更粗的**图形，
@@ -80,10 +88,44 @@ logo 的天线笔画在 180 单位的 viewBox 里宽 10 单位。折算成像素
 做法：给每个尺寸配一份"加粗版"SVG，用 stroke 把路径撑粗
 （stroke-width 让笔画向外扩），再渲染。
 
-实测效果（放大到 72 物理像素后数"实心黑"像素）：
-    16px  102 -> 260     20px  125 -> 218     24px  126 -> 195
-    32px  142 -> 154
-同时两根天线仍然分得开（白色缝隙 25..29px 没被填死）。
+⚠️ 加粗量必须把 tile 的 transform scale 算进去。
+   一条路径单位长 L 的笔画，渲染出的像素宽 = L * s * size / vh，
+   其中 s 是 tile 里 <g transform="scale(s)"> 的 s。
+   漏掉 s 会让小尺寸的笔画粗 1/s 倍 —— s=0.842 时粗 1.19 倍，
+   s=1.2226 时粗 1.22 倍，小尺寸下两根眼条会被填死。
+   所以 s 必须**从 SVG 里解析出来**（parse_tile_scale），
+   不能写死 —— 写死的话，改了 --scale 就静默算错。
+
+实测（每档都验证"两根眼条之间仍有白缝、拱形内腔没被填死"）：
+    尺寸  加粗量   眼条宽  眼条间距
+    16px  16.21    3, 2    2px
+    20px  10.87    2, 2    4px
+    24px   7.31    3, 3    4px
+    32px   2.86    3, 3    6px
+    40px   0.19    4, 3    8px
+    48px+  0（原生就够）
+
+────────────────────────────────────────────────────────────────────────
+图形在 tile 里的比例 —— 这才是"图标变胖"的真正原因
+────────────────────────────────────────────────────────────────────────
+阶梯密度解决的是**缩放**问题。但用户看到"图标又胖又糊"时，
+真正的元凶不在缩放，而在图形本身画得太大。
+
+逐像素比对用户桌面截图上的两个图标（都是 72 物理像素的白底块）：
+
+    旧的「Agy启动器」   图形占块高 44px (61%)   眼条 6px   墨迹 382
+    v1.5.0 的           图形占块高 63px (88%)   眼条 9px   墨迹 785
+
+元凶是 tile.py 的 --scale：
+
+    --scale 0.62  ->  scale(0.842264)  ->  图形占块高 61%   ← 正确
+    --scale 0.90  ->  scale(1.222642)  ->  图形占块高 88%   ← 退化
+
+v1.4.0 曾把它从 0.60 提到 0.90，理由是"标志放大到 90%，形象更清楚"。
+方向反了：白底方块里塞一个几乎顶到边的大黑图形，小尺寸下两根
+眼条会连成一片，整个标志糊成一坨。
+
+所以 tile.py 的 --scale 默认值是 0.62，不是 0.90。
 """
 
 import argparse
@@ -128,27 +170,69 @@ img{{display:block;width:{size}px;height:{size}px}}
 
 # ── 光学尺寸：小尺寸用更粗的笔画 ───────────────────────────────────────
 
-# 目标：把每个尺寸的"最细笔画"撑到至少 2 个像素。
+# logo 里最细的笔画（拱形的腿）在 viewBox 里宽 10.5 单位。
+# 天线（眼睛）是 20 单位的圆头矩形，明显更粗。
 #
-# logo 的天线笔画在 180 单位 viewBox 里宽 10 单位，撑粗 d 之后
-# 宽度变成 10 + d。渲染出的像素宽度 = (10 + d) / 180 * size。
+# 撑粗 d 之后，笔画宽度变成 base + d 单位。
+#
+# 一条 L 单位长的笔画，渲染出来的像素宽度是：
+#
+#     px = L * s * size / vh
+#
+#   L  = 笔画单位宽（10.5）
+#   s  = tile 里 <g transform="scale(s)"> 的缩放系数
+#   vh = viewBox 高度（180）
+#
+# ⚠️ 这里的 s 必须**从 SVG 里解析出来**，不能写死。
+#    漏掉 s（早先的版本就漏了）会让小尺寸的笔画粗 1/s 倍，
+#    0.62 的 scale 下就是粗 1.19 倍 —— 小尺寸下两根眼条直接被填死。
 #
 # 反解：要让 size 下的笔画有 target 像素宽，
-#     d = target * 180 / size - 10
 #
-# 表格按 target = 2.0px 反解。再粗会让两根天线粘在一起
+#     (base + d) * s * size / vh = target
+#  => d = target * vh / (s * size) - base
+#
+# target 取 2.0px。再粗会让两根天线粘在一起
 # （两根天线中心相距 63 单位，stroke 每边各扩 d，
 #  间隙 = 63 - 2*d；d=12 时间隙 39 单位 = 16px 下 3.5px，还行；
 #  d=22 时间隙只剩 19 单位 = 1.7px，两根几乎粘死）。
-STROKE_TABLE = {
-    16: 12.5,   # 2.00 px
-    20: 8.0,    # 2.00 px
-    24: 5.0,    # 2.00 px
-    28: 2.9,    # 2.00 px
-    32: 1.3,    # 2.00 px
-    36: 0.0,    # 2.00 px（原生就够）
-    40: 0.0,    # 2.22 px
-}
+BASE_STROKE_UNITS = 10.5
+TARGET_STROKE_PX = 2.0
+
+
+def parse_tile_scale(svg_text):
+    """从 tile SVG 里解析出 <g transform="scale(s)"> 的 s。
+
+    找不到就返回 None（调用方按"没有额外缩放"处理）。
+    """
+    m = re.search(r'<g\b[^>]*\btransform\s*=\s*"[^"]*?\bscale\(\s*([0-9.]+)'
+                  r'\s*\)', svg_text)
+    if m:
+        return float(m.group(1))
+    m = re.search(r'\bscale\(\s*([0-9.]+)\s*\)', svg_text)
+    return float(m.group(1)) if m else None
+
+
+def parse_viewbox_height(svg_text):
+    """解析 viewBox 的高度（viewBox 缺第三/四个值时按 0 处理）。"""
+    m = re.search(r'viewBox\s*=\s*"([^"]+)"', svg_text)
+    if not m:
+        return None
+    parts = m.group(1).replace(",", " ").split()
+    if len(parts) != 4:
+        return None
+    return float(parts[3])
+
+
+def stroke_for_size(size, scale, vh):
+    """算出这个尺寸要加粗多少（SVG 用户单位）。
+
+    scale 为 None（SVG 里没有 transform）时按 1.0 处理。
+    """
+    if scale is None or vh is None or size <= 0:
+        return 0.0
+    d = TARGET_STROKE_PX * vh / (scale * size) - BASE_STROKE_UNITS
+    return max(0.0, d)
 
 
 def make_bold_variant(svg_text, stroke):
@@ -593,10 +677,12 @@ def main():
             ("icon_512x512.png", 512), ("icon_512x512@2x.png", 1024),
         ]
         svg_text = open(args.svg, "r", encoding="utf-8").read()
+        scale = parse_tile_scale(svg_text)
+        vh = parse_viewbox_height(svg_text)
         for fname, px in entries:
             ss = args.supersample if args.supersample > 1 else 1
             big = px * ss
-            stroke = STROKE_TABLE.get(px, 0.0)
+            stroke = stroke_for_size(px, scale, vh)
             src = args.svg
             if stroke > 0:
                 src = os.path.join(tempfile.gettempdir(), f"bold_{px}.svg")
@@ -644,12 +730,16 @@ def main():
     frames = []
     with tempfile.TemporaryDirectory(prefix="ico-build-") as td:
         svg_text = open(args.svg, "r", encoding="utf-8").read()
+        scale = parse_tile_scale(svg_text)
+        vh = parse_viewbox_height(svg_text)
+        print(f"  tile scale={scale}  viewBox 高={vh}  "
+              f"基线笔画={BASE_STROKE_UNITS} 单位")
         for size in sizes:
             ss = args.supersample if args.supersample > 1 else 1
             big = size * ss
 
             # 小尺寸用加粗版（光学尺寸），大尺寸用原图
-            stroke = STROKE_TABLE.get(size, 0.0)
+            stroke = stroke_for_size(size, scale, vh)
             src = args.svg
             if stroke > 0:
                 bold = make_bold_variant(svg_text, stroke)
