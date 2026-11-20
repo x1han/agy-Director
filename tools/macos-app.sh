@@ -54,6 +54,7 @@ VERSION="${VERSION#v}"
 APP_NAME="agy-Director"
 BUNDLE="$OUTDIR/$APP_NAME.app"
 ICNS_SRC="assets/$APP_NAME.png"
+LOGO="tools/icon/source/agy-Director-logo.svg"
 
 if [ ! -f "$BIN" ]; then
     echo "找不到二进制: $BIN" >&2
@@ -61,6 +62,10 @@ if [ ! -f "$BIN" ]; then
 fi
 if [ ! -f "$ICNS_SRC" ]; then
     echo "找不到图标源图: $ICNS_SRC（跑 python tools/icon/build.py ... --png 生成）" >&2
+    exit 1
+fi
+if [ ! -f "$LOGO" ]; then
+    echo "找不到矢量源图: $LOGO" >&2
     exit 1
 fi
 
@@ -75,17 +80,50 @@ chmod +x "$BUNDLE/Contents/MacOS/$APP_NAME"
 echo "==> 生成 .icns"
 ICONSET="$BUNDLE/Contents/Resources/$APP_NAME.iconset"
 mkdir -p "$ICONSET"
+
 # iconutil 要求这 10 个文件齐全，少一个就报 "Unsupported filename"。
-sips -z 16 16    "$ICNS_SRC" --out "$ICONSET/icon_16x16.png"       >/dev/null
-sips -z 32 32    "$ICNS_SRC" --out "$ICONSET/icon_16x16@2x.png"    >/dev/null
-sips -z 32 32    "$ICNS_SRC" --out "$ICONSET/icon_32x32.png"       >/dev/null
-sips -z 64 64    "$ICNS_SRC" --out "$ICONSET/icon_32x32@2x.png"    >/dev/null
-sips -z 128 128  "$ICNS_SRC" --out "$ICONSET/icon_128x128.png"     >/dev/null
-sips -z 256 256  "$ICNS_SRC" --out "$ICONSET/icon_128x128@2x.png"  >/dev/null
-sips -z 256 256  "$ICNS_SRC" --out "$ICONSET/icon_256x256.png"     >/dev/null
-sips -z 512 512  "$ICNS_SRC" --out "$ICONSET/icon_256x256@2x.png"  >/dev/null
-sips -z 512 512  "$ICNS_SRC" --out "$ICONSET/icon_512x512.png"     >/dev/null
-sips -z 1024 1024 "$ICNS_SRC" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+#
+# 关键：**每个尺寸都从矢量源重新栅格化**（tools/icon/build.py --iconset），
+# 而不是把 1024 那张用 sips 缩下来。
+# sips 是插值缩小，16/32 这种小尺寸会糊 —— 和 Windows 侧
+# "降采样算法"的坑是同一个（实测双线性 vs 面积平均：16px 差 7 倍）。
+#
+# tile SVG（白底圆角方块 + 黑标）是**中间产物**，仓库里不存 ——
+# 这里现算。tools/icon/source/ 下只留单色 logo 母版。
+#
+# build.py 需要无头 Chrome/Edge。CI 的 macOS runner 上有 Chrome 吗？
+# 没有。所以这里 fallback 到 sips —— macOS 上要装 Chrome 才能用
+# 矢量直出，日常发版走 sips 也够用（1024 缩到 16 的糊程度比
+# Windows 小，因为 macOS 的小尺寸档位用得少）。
+if command -v python3 >/dev/null 2>&1 && \
+   python3 -c "import sys; sys.exit(0)" 2>/dev/null && \
+   { command -v google-chrome >/dev/null 2>&1 || \
+     [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; }; then
+    echo "    用矢量源逐尺寸栅格化（Chrome 可用）"
+
+    # mktemp -d 必须带模板：BSD 版（macOS）不给模板会报用法错误。
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/agyicon.XXXXXX")"
+    trap 'rm -rf "$tmp"' EXIT
+
+    # 用 python3（不是 python）—— macOS 上没有 python 这个别名。
+    python3 tools/icon/tile.py "$LOGO" "$tmp/tile.svg" \
+        --bg "#FFFFFF" --scale 0.90
+    python3 tools/icon/build.py "$tmp/tile.svg" "$ICNS_SRC" \
+        --iconset "$ICONSET"
+else
+    echo "    回退到 sips 从 1024 缩放（macOS 上没有 Chrome）"
+    sips -z 16 16    "$ICNS_SRC" --out "$ICONSET/icon_16x16.png"       >/dev/null
+    sips -z 32 32    "$ICNS_SRC" --out "$ICONSET/icon_16x16@2x.png"    >/dev/null
+    sips -z 32 32    "$ICNS_SRC" --out "$ICONSET/icon_32x32.png"       >/dev/null
+    sips -z 64 64    "$ICNS_SRC" --out "$ICONSET/icon_32x32@2x.png"    >/dev/null
+    sips -z 128 128  "$ICNS_SRC" --out "$ICONSET/icon_128x128.png"     >/dev/null
+    sips -z 256 256  "$ICNS_SRC" --out "$ICONSET/icon_128x128@2x.png"  >/dev/null
+    sips -z 256 256  "$ICNS_SRC" --out "$ICONSET/icon_256x256.png"     >/dev/null
+    sips -z 512 512  "$ICNS_SRC" --out "$ICONSET/icon_256x256@2x.png"  >/dev/null
+    sips -z 512 512  "$ICNS_SRC" --out "$ICONSET/icon_512x512.png"     >/dev/null
+    sips -z 1024 1024 "$ICNS_SRC" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+fi
+
 iconutil -c icns "$ICONSET" -o "$BUNDLE/Contents/Resources/$APP_NAME.icns"
 rm -rf "$ICONSET"
 

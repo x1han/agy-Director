@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/agy-Director-tile.svg" width="128" alt="agy-Director">
+  <img src="assets/agy-Director.png" width="128" alt="agy-Director">
 </div>
 
 # agy-Director
@@ -134,14 +134,16 @@ agy-Director
 光标默认停在「是否启动」上，所以**直接回车就是启动**。
 
 选完之后会打印一段摘要（目标 / 版本 / 通道 / 代理 / 日志路径）。
-摘要页**最多显示 3 秒就自动关闭**，期间按回车可以立刻关掉。
+摘要页**最多显示 5 秒就自动关闭**，等待期间终端上会显示**实时倒计时**
+（5 → 1），你能确切知道还剩几秒，不用猜窗口什么时候消失。
+期间按回车可以立刻关掉。
 
-想改这个时间：
+想改这个时间（这些是 `tui` 子命令的选项）：
 
 ```bash
-agy-Director --wait=10     # 最多等 10 秒
-agy-Director --wait        # 一直等到按回车
-agy-Director --no-wait     # 立刻退出，不等（脚本里用）
+agy-Director tui --wait=10    # 最多等 10 秒
+agy-Director tui --wait       # 一直等到按回车
+agy-Director tui --no-wait    # 立刻退出，不等（脚本里用）
 ```
 
 ### 命令行

@@ -18,10 +18,77 @@
 
 为什么不用 Python 的 PIL/Cairo:
     引入额外依赖不划算；Chrome 已在系统里。
+
+────────────────────────────────────────────────────────────────────────
+Windows 到底选哪一帧？（实测，别猜）
+────────────────────────────────────────────────────────────────────────
+用一个"每帧涂不同纯色"的图标，交给 Windows 自己挑（PrivateExtractIconsW，
+也就是资源管理器用的那个 API），读回来的颜色就是它选中的那一帧。
+实测结论：
+
+    请求 16  -> 选 16      请求 48  -> 选 48
+    请求 20  -> 选 16 ↑1.25 请求 60  -> 选 60
+    请求 24  -> 选 24      请求 72  -> 选 72
+    请求 32  -> 选 32      请求 96  -> 选 96
+    请求 40  -> 选 40      请求 144 -> 选 144
+    请求 64  -> 选 64      请求 192 -> 选 192
+
+规则 = **选不超过请求的最大那一帧，然后缩放到请求尺寸**。
+注意方向：不是"选最小的够大的帧再缩小"——正好相反。
+
+这有两个后果：
+
+  1. 尺寸阶梯必须**密**。Windows 只在"恰好命中"时才不缩放。
+     我们原来只做 16/24/32/48/64/128/256，在 150% 缩放的屏幕上，
+     48 逻辑像素的图标要 72 物理像素 → 只能命中 64 帧 → 放大 1.13 倍。
+     这就是"图标发糊"的真正原因（用户 150% 屏幕上的实测截图，
+     逐像素比对确认就是我们的 64 帧被放大到 72，IoU 0.966）。
+     加一条 72 的帧就能精确命中，误差归零。
+
+  2. **必须提供 256 帧**，否则请求 256 时只能拿 128 放大 2 倍。
+     （Windows 自带的 explorer.exe 也是 16..64 + 256 PNG。）
+
+为什么 125% / 150% / 175% 的常见缩放都要覆盖：
+    资源管理器的图标槽位（逻辑像素）常见有 16/20/24/32/40/48/64/96/128。
+    乘上缩放比例后，物理像素可能是 20/24/30/32/40/48/60/72/80/96/120/
+    144/160/192/240/256...。把这条链上的物理尺寸都做成帧，
+    才能保证在 125%/150%/175% 缩放下都命中而不是被放大。
+
+    实测（每个阶梯真的编进 exe 再问 Windows）：
+        阶梯 A（16/24/32/48/64/128/256）150% 下 2/9 精确命中
+        阶梯 B（16/20/24/32/40/48/60/64/72/96/128/144/192/256）
+                 150% 下 9/9 精确命中   ← 采用
+        阶梯 C（再加 30/36 等）      150% 下 9/9，但 exe 大 18KB
+                                     收益没有，放弃
+
+────────────────────────────────────────────────────────────────────────
+小尺寸的笔画要加粗（光学尺寸）
+────────────────────────────────────────────────────────────────────────
+logo 的天线笔画在 180 单位的 viewBox 里宽 10 单位。折算成像素：
+
+    16px -> 0.89 px   （亚像素，永远渲染成一团灰）
+    24px -> 1.33 px
+    32px -> 1.78 px
+    48px -> 2.67 px
+    64px -> 3.56 px
+
+小于约 1.5px 的笔画不管用什么重采样算法都糊——它只能变成
+一个部分覆盖的像素。所以小尺寸必须用**独立的、更粗的**图形，
+这就是"光学尺寸"（optical sizing）：同一个标志在不同尺寸下
+用不同的笔画粗细，跟字体有 display/optical 尺寸是一个道理。
+
+做法：给每个尺寸配一份"加粗版"SVG，用 stroke 把路径撑粗
+（stroke-width 让笔画向外扩），再渲染。
+
+实测效果（放大到 72 物理像素后数"实心黑"像素）：
+    16px  102 -> 260     20px  125 -> 218     24px  126 -> 195
+    32px  142 -> 154
+同时两根天线仍然分得开（白色缝隙 25..29px 没被填死）。
 """
 
 import argparse
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -57,6 +124,52 @@ HTML_TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 html,body{{margin:0;padding:0;background:transparent}}
 img{{display:block;width:{size}px;height:{size}px}}
 </style></head><body><img src="{svg}"></body></html>"""
+
+
+# ── 光学尺寸：小尺寸用更粗的笔画 ───────────────────────────────────────
+
+# 目标：把每个尺寸的"最细笔画"撑到至少 2 个像素。
+#
+# logo 的天线笔画在 180 单位 viewBox 里宽 10 单位，撑粗 d 之后
+# 宽度变成 10 + d。渲染出的像素宽度 = (10 + d) / 180 * size。
+#
+# 反解：要让 size 下的笔画有 target 像素宽，
+#     d = target * 180 / size - 10
+#
+# 表格按 target = 2.0px 反解。再粗会让两根天线粘在一起
+# （两根天线中心相距 63 单位，stroke 每边各扩 d，
+#  间隙 = 63 - 2*d；d=12 时间隙 39 单位 = 16px 下 3.5px，还行；
+#  d=22 时间隙只剩 19 单位 = 1.7px，两根几乎粘死）。
+STROKE_TABLE = {
+    16: 12.5,   # 2.00 px
+    20: 8.0,    # 2.00 px
+    24: 5.0,    # 2.00 px
+    28: 2.9,    # 2.00 px
+    32: 1.3,    # 2.00 px
+    36: 0.0,    # 2.00 px（原生就够）
+    40: 0.0,    # 2.22 px
+}
+
+
+def make_bold_variant(svg_text, stroke):
+    """返回一个加粗版 SVG：给所有 path 加 stroke + stroke-linejoin。
+
+    原理：SVG 的 stroke 画在 path **两侧**，所以给一条 10 单位宽的
+    笔画加 d 单位的 stroke，实际宽度变成 10 + d 单位。
+    stroke-linejoin=round 让拐角不变尖，视觉上更接近原图。
+    """
+    if stroke <= 0:
+        return svg_text
+    out = re.sub(
+        r'(<path\b[^>]*?)(/?>)',
+        lambda m: (f'{m.group(1)} stroke="currentColor" '
+                   f'stroke-width="{stroke:g}" stroke-linejoin="round" '
+                   f'stroke-linecap="round"{m.group(2)}'),
+        svg_text)
+    # 用 currentColor 时要保证颜色来自 fill；直接写死 fill 颜色更稳。
+    out = re.sub(r'<g fill="([^"]+)"',
+                 lambda m: f'<g fill="{m.group(1)}" color="{m.group(1)}"', out)
+    return out
 
 
 def render_svg_to_png(chrome, svg_path, out_png, size=512):
@@ -435,19 +548,74 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("svg")
     ap.add_argument("out")
-    ap.add_argument("--sizes", default="16,24,32,48,64,128,256")
+    ap.add_argument("--sizes",
+                    default="16,20,24,32,40,48,60,64,72,96,128,144,192,256",
+                    help="要生成的帧尺寸（逗号分隔）。"
+                         "默认这条链保证 Windows 在 100/125/150/175/200 "
+                         "百分比的显示缩放下都能命中精确尺寸的帧，"
+                         "而不是把小帧放大。")
     ap.add_argument("--png", action="store_true",
                     help="输出 PNG 而不是 ICO（macOS iconset 需要）")
     ap.add_argument("--png-size", type=int, default=1024,
                     help="--png 模式下的边长，默认 1024")
-    ap.add_argument("--png-frame-size", type=int, default=256,
-                    help="从该尺寸起，ICO 里用 PNG 压缩帧（0 = 全用 DIB）")
+    ap.add_argument("--png-frame-size", type=int, default=96,
+                    help="从该尺寸起，ICO 里用 PNG 压缩帧（0 = 全用 DIB）。"
+                         "96 及以上用 PNG 是安全的：实测 Windows 会正确"
+                         "选用这些帧（96/128/144/192 全部命中）。"
+                         "更小的尺寸必须用 DIB —— 实测 PNG 帧在 72 及以下"
+                         "会被 Windows 跳过，导致选不中。")
     ap.add_argument("--supersample", type=int, default=4,
                     help="每个尺寸渲染成 size*supersample 再降采样")
+    ap.add_argument("--iconset", metavar="DIR",
+                    help="输出 macOS .iconset 目录（10 个标准命名的 PNG），"
+                         "每个尺寸都从矢量源单独栅格化。"
+                         "比 sips 从 1024 缩下来准：sips 是插值缩小，"
+                         "16/32 这类小尺寸会糊。")
     args = ap.parse_args()
 
     chrome = find_chrome()
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+
+    # ── --iconset 模式：给 macOS 用 ──────────────────────────────────
+    #
+    # iconutil 要求这 10 个文件齐全，少一个就报 "Unsupported filename"。
+    # 关键区别：**每个尺寸都从矢量源重新栅格化**，而不是把 1024 那张
+    # 用 sips 缩下来 —— 后者是插值缩小，16/32 这种小尺寸必然糊，
+    # 和 Windows 侧"降采样算法"的坑是同一个。
+    if args.iconset:
+        os.makedirs(args.iconset, exist_ok=True)
+        # (输出文件名, 像素边长)
+        entries = [
+            ("icon_16x16.png", 16), ("icon_16x16@2x.png", 32),
+            ("icon_32x32.png", 32), ("icon_32x32@2x.png", 64),
+            ("icon_128x128.png", 128), ("icon_128x128@2x.png", 256),
+            ("icon_256x256.png", 256), ("icon_256x256@2x.png", 512),
+            ("icon_512x512.png", 512), ("icon_512x512@2x.png", 1024),
+        ]
+        svg_text = open(args.svg, "r", encoding="utf-8").read()
+        for fname, px in entries:
+            ss = args.supersample if args.supersample > 1 else 1
+            big = px * ss
+            stroke = STROKE_TABLE.get(px, 0.0)
+            src = args.svg
+            if stroke > 0:
+                src = os.path.join(tempfile.gettempdir(), f"bold_{px}.svg")
+                with open(src, "w", encoding="utf-8") as f:
+                    f.write(make_bold_variant(svg_text, stroke))
+            with tempfile.TemporaryDirectory(prefix="ics-") as td:
+                png = os.path.join(td, "r.png")
+                render_svg_to_png(chrome, src, png, size=big)
+                sw, sh, rgba = read_png_rgba(png)
+                scaled = resize_rgba(rgba, sw, sh, px, px) if ss > 1 else rgba
+                data = build_png(scaled, px)
+            outp = os.path.join(args.iconset, fname)
+            with open(outp, "wb") as f:
+                f.write(data)
+            note = f"  (加粗 {stroke:g})" if stroke > 0 else ""
+            print(f"  {fname:<22} {px:>5}px  {len(data):>7} 字节{note}")
+        print(f"已写入 iconset 到 {args.iconset}")
+        print("在 macOS 上跑: iconutil -c icns <iconset> -o <名字>.icns")
+        return
 
     # ── --png 模式：给 macOS iconset 用 ──────────────────────────────
     if args.png:
@@ -475,11 +643,22 @@ def main():
     # 超采样倍数越大越准，4 已经和"直接按该尺寸光栅化"持平。
     frames = []
     with tempfile.TemporaryDirectory(prefix="ico-build-") as td:
+        svg_text = open(args.svg, "r", encoding="utf-8").read()
         for size in sizes:
             ss = args.supersample if args.supersample > 1 else 1
             big = size * ss
+
+            # 小尺寸用加粗版（光学尺寸），大尺寸用原图
+            stroke = STROKE_TABLE.get(size, 0.0)
+            src = args.svg
+            if stroke > 0:
+                bold = make_bold_variant(svg_text, stroke)
+                src = os.path.join(td, f"bold_{size}.svg")
+                with open(src, "w", encoding="utf-8") as f:
+                    f.write(bold)
+
             png = os.path.join(td, f"render_{size}.png")
-            render_svg_to_png(chrome, args.svg, png, size=big)
+            render_svg_to_png(chrome, src, png, size=big)
             sw, sh, rgba = read_png_rgba(png)
 
             if ss > 1:
@@ -491,11 +670,13 @@ def main():
             if use_png:
                 data = build_png(scaled, size)
                 frames.append((data, True))
-                print(f"  {size:>4}px  PNG 帧   {len(data):>7} 字节")
+                kind = "PNG"
             else:
                 data = build_dib(scaled, size)
                 frames.append((data, False))
-                print(f"  {size:>4}px  DIB 帧   {len(data):>7} 字节")
+                kind = "DIB "
+            note = f"  (加粗 {stroke:g})" if stroke > 0 else ""
+            print(f"  {size:>4}px  {kind} 帧   {len(data):>7} 字节{note}")
 
     ico = build_ico(frames, sizes)
     verify_ico(ico, sizes)

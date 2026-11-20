@@ -7,8 +7,18 @@
 #
 # 前置条件:
 #   - Go 工具链（用于 go install rsrc）
-#   - assets/agy-Director-tile.svg（源图）
+#   - tools/icon/source/agy-Director-logo.svg（矢量源图）
 #   - 系统上有 Chrome/Chromium/Edge（build.py 用无头浏览器渲染 SVG）
+#
+# ── 为什么源图不在 assets/ 里 ────────────────────────────────────────
+#
+# assets/ 只放**要随包分发的产物**（.ico / .png）。
+# 矢量源图是**构建输入**，不是产物 —— 它放在
+# tools/icon/source/ 下，CI 和本地都能重新生成所有产物。
+#
+# "白底圆角方块 + 黑标" 的 tile 是由 logo 加一个 <rect> 拼出来的，
+# 不需要单独存 —— tile.py 每次现算（同样的输入必然得到同样的输出，
+# 实测字节级一致）。
 #
 # ── 为什么 .syso 要提交进仓库 ──────────────────────────────────────────
 #
@@ -29,34 +39,59 @@
 # "256 的 32bpp DIB 有 270KB，太大"。这个取舍是错的：
 #
 #   资源管理器的大图标视图要 256px。找不到 256 帧时，
-#   Windows 会把 128 帧**放大** —— 这就是"图标看起来糊"的真正原因。
+#   Windows 会把 128 帧**放大**。
 #
 # 现在 256 帧存成 PNG 压缩格式：同一张图，270KB → 6.1KB（差 40 倍），
-# 画质无损。整个 .syso 只比原来大 6KB。
+# 画质无损。
 #
-# Windows 自己就是这么干的 —— explorer.exe / cmd.exe / notepad.exe
-# 的图标都是"小尺寸 DIB + 256 尺寸 PNG"的混合格式。
+# ── 为什么尺寸阶梯要这么密（这才是"糊"的真正原因）──────────────────
+#
+# 实测（每帧涂不同颜色的图标，问 Windows 自己挑哪一帧，走的是
+#       PrivateExtractIconsW —— 和资源管理器同一条路）：
+#
+#   Windows 的规则是「选**不超过**请求尺寸的最大那一帧，再缩放」。
+#   注意方向 —— 不是"选最小的够大的帧再缩小"。
+#
+#   请求 72px，容器里只有 16/24/32/48/64/128/256：
+#     → 命中 64 帧，放大 1.13 倍。细笔画被拉成灰边 —— 这就是糊。
+#
+#   150% 缩放的屏幕上，资源管理器 48 逻辑像素的图标要 72 物理像素，
+#   于是每一个 48px 的图标都必然被放大一次。
+#
+# 现在这条阶梯 16/20/24/32/40/48/60/64/72/96/128/144/192/256
+# 覆盖了 100/125/150/175/200% 缩放下所有常见槽位的**物理**尺寸。
+# 150% 下实测 9/9 精确命中（改之前 2/9），而 .syso 反而更小了
+# （98KB vs 108KB，因为 96 以上的帧改用了 PNG 压缩）。
+#
+# 96 及以上用 PNG 帧：实测 Windows 会正确选用这些帧。
+# 72 及以下必须用 DIB —— 实测 PNG 帧在那些尺寸会被 Windows 跳过。
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SVG="assets/agy-Director-tile.svg"
-LOGO="assets/agy-Director-logo.svg"
+LOGO="tools/icon/source/agy-Director-logo.svg"
 ICO_FULL="assets/agy-Director.ico"
 PNG_FULL="assets/agy-Director.png"
 OUT_DIR="cmd/agy-director"
 
-if [ ! -f "$SVG" ]; then
-    echo "找不到 $SVG" >&2
+if [ ! -f "$LOGO" ]; then
+    echo "找不到 $LOGO" >&2
     exit 1
 fi
+
+# tile SVG 是**中间产物**，不进仓库 —— 放到临时目录里。
+#
+# mktemp -d 必须带模板：BSD 版（macOS）不给模板会直接报用法错误。
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/agyicon.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+SVG="$tmp/tile.svg"
 
 echo "==> 生成 tile SVG（白底 + 黑标，标志占 90%）"
 python tools/icon/tile.py "$LOGO" "$SVG" --bg "#FFFFFF" --scale 0.90
 
-echo "==> 生成完整 ICO（16..256，256 帧用 PNG 压缩）"
-python tools/icon/build.py "$SVG" "$ICO_FULL" --sizes 16,24,32,48,64,128,256
+echo "==> 生成完整 ICO（14 档尺寸，96+ 用 PNG 压缩）"
+python tools/icon/build.py "$SVG" "$ICO_FULL"
 
 echo "==> 生成 macOS iconset 源图（1024×1024 PNG）"
 python tools/icon/build.py "$SVG" "$PNG_FULL" --png --png-size 1024
